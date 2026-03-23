@@ -103,13 +103,17 @@ pub enum SummaryColumn {
     #[default]
     Temp,
     Peak,
+    ClientPeak,
+    T95,
     Power,
     PeakPower,
     Freq,
     Util,
+    Efficiency,
     Fan,
     Energy,
     Uptime,
+    ThrottleTime,
     Throttle,
 }
 

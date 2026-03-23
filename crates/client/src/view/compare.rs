@@ -225,14 +225,18 @@ fn build_summary_table<'a>(
         sort_header("Cores", SummaryColumn::Cores, 42),
         sort_header("Temp", SummaryColumn::Temp, 50),
         sort_header("Peak", SummaryColumn::Peak, 45),
+        sort_header("Cli Pk", SummaryColumn::ClientPeak, 50),
+        sort_header("T≥95", SummaryColumn::T95, 50),
         sort_header("Power", SummaryColumn::Power, 55),
         sort_header("Pk Pwr", SummaryColumn::PeakPower, 55),
         sort_header("Freq", SummaryColumn::Freq, 60),
         sort_header("Util", SummaryColumn::Util, 45),
+        sort_header("Eff", SummaryColumn::Efficiency, 60),
         sort_header("Fan", SummaryColumn::Fan, 55),
         sort_header("Energy", SummaryColumn::Energy, 60),
         sort_header("Uptime", SummaryColumn::Uptime, 65),
-        sort_header("Throttle", SummaryColumn::Throttle, 60),
+        sort_header("Thr t", SummaryColumn::ThrottleTime, 45),
+        sort_header("Evts", SummaryColumn::Throttle, 40),
     ]
     .spacing(4);
 
@@ -254,6 +258,8 @@ fn build_summary_table<'a>(
                 SummaryColumn::Peak => {
                     node.snapshot.as_ref().map(|s| s.peak_temp as f64).unwrap_or(0.0)
                 }
+                SummaryColumn::ClientPeak => node.client_peak_temp() as f64,
+                SummaryColumn::T95 => node.cumulative_temp_secs(95),
                 SummaryColumn::Power => {
                     node.snapshot.as_ref().map(|s| s.ppt_watts).unwrap_or(0.0)
                 }
@@ -277,6 +283,13 @@ fn build_summary_table<'a>(
                 SummaryColumn::Uptime => {
                     node.snapshot.as_ref().map(|s| s.uptime_secs).unwrap_or(0.0)
                 }
+                SummaryColumn::Efficiency => node
+                    .snapshot
+                    .as_ref()
+                    .filter(|s| s.ppt_watts > 1.0)
+                    .map(|s| s.avg_freq_mhz as f64 / s.ppt_watts)
+                    .unwrap_or(0.0),
+                SummaryColumn::ThrottleTime => node.throttle_secs(),
                 SummaryColumn::Throttle => node
                     .snapshot
                     .as_ref()
@@ -311,17 +324,29 @@ fn build_summary_table<'a>(
                 .map(|si| format!("{}", si.core_count))
                 .unwrap_or_else(|| "—".into());
 
-            let throttle_str = if snap.throttle_active {
-                snap.throttle_reason.clone()
-            } else if node.throttle_ticks > 0 {
-                format!("{:.0}s", node.throttle_secs())
+            let throttle_color = if snap.throttle_active { colors::MAGMA } else { colors::TEPHRA };
+
+            let evts = snap.thermal_events + snap.power_events;
+            let evts_str = if evts > 0 { format!("{}", evts) } else { "—".into() };
+
+            let thr_time = node.throttle_secs();
+            let thr_time_str = if thr_time > 0.0 {
+                format_duration(thr_time)
             } else {
                 "—".into()
             };
-            let throttle_color = if snap.throttle_active {
-                colors::MAGMA
+
+            let cli_pk = node.client_peak_temp();
+            let cli_pk_color = colors::temp_color(cli_pk);
+
+            let t95 = node.cumulative_temp_secs(95);
+            let t95_str = if t95 > 0.0 { format_duration(t95) } else { "—".into() };
+            let t95_color = if t95 > 0.0 { colors::temp_color(95) } else { colors::TEPHRA };
+
+            let eff_str = if snap.ppt_watts > 1.0 {
+                format!("{:.0} M/W", snap.avg_freq_mhz as f64 / snap.ppt_watts)
             } else {
-                colors::TEPHRA
+                "—".into()
             };
 
             let fan_str = if snap.fan_detected {
@@ -349,6 +374,13 @@ fn build_summary_table<'a>(
                     )
                     .width(45),
                     container(
+                        text(format!("{}°", cli_pk))
+                            .size(11)
+                            .color(cli_pk_color),
+                    )
+                    .width(50),
+                    container(text(t95_str).size(11).color(t95_color)).width(50),
+                    container(
                         text(format!("{:.1}W", snap.ppt_watts))
                             .size(11)
                             .color(colors::TEPHRA),
@@ -372,6 +404,7 @@ fn build_summary_table<'a>(
                             .color(colors::TEPHRA),
                     )
                     .width(45),
+                    container(text(eff_str).size(11).color(colors::TEPHRA)).width(60),
                     container(text(fan_str).size(11).color(colors::TEPHRA)).width(55),
                     container(
                         text(format!("{:.2}Wh", snap.energy_wh))
@@ -380,7 +413,8 @@ fn build_summary_table<'a>(
                     )
                     .width(60),
                     container(text(uptime_str).size(11).color(colors::TEPHRA)).width(65),
-                    container(text(throttle_str).size(11).color(throttle_color)).width(60),
+                    container(text(thr_time_str).size(11).color(throttle_color)).width(45),
+                    container(text(evts_str).size(11).color(throttle_color)).width(40),
                 ]
                 .spacing(4),
             );
@@ -407,6 +441,21 @@ fn build_summary_table<'a>(
             ..Default::default()
         })
         .into()
+}
+
+/// Format a short duration (seconds) compactly: "45s", "2m10s", "1h5m".
+fn format_duration(secs: f64) -> String {
+    let total = secs as u64;
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    if h > 0 {
+        format!("{}h{}m", h, m)
+    } else if m > 0 {
+        format!("{}m{}s", m, s)
+    } else {
+        format!("{}s", s)
+    }
 }
 
 /// Format uptime seconds into a human-readable string.
