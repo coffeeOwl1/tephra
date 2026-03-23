@@ -1,0 +1,236 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Tephra API",
+    "description": "Tephra is a lightweight agent that exposes CPU thermal metrics, frequencies, utilization, power consumption, and throttle detection over HTTP. Designed to run on every machine on a local network and be discovered via mDNS.",
+    "version": "0.1.0",
+    "license": {
+      "name": "MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:9867",
+      "description": "Default local agent"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health check",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "Agent is running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "ok" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system": {
+      "get": {
+        "summary": "Static system information",
+        "description": "Returns hardware and OS identification that does not change between samples. Useful for labeling nodes in a dashboard.",
+        "operationId": "getSystemInfo",
+        "responses": {
+          "200": {
+            "description": "System information",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SystemInfo" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/snapshot": {
+      "get": {
+        "summary": "Current point-in-time metrics",
+        "description": "Returns the latest sampled metrics including temperature, power, frequency, utilization, fan speed, throttle state, and per-core breakdown.",
+        "operationId": "getSnapshot",
+        "responses": {
+          "200": {
+            "description": "Current metrics snapshot",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Snapshot" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/history": {
+      "get": {
+        "summary": "Rolling sample history",
+        "description": "Returns the last 120 samples (60 seconds at default 500ms interval) as parallel arrays for efficient charting.",
+        "operationId": "getHistory",
+        "responses": {
+          "200": {
+            "description": "Rolling history arrays",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HistoryResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/events": {
+      "get": {
+        "summary": "Real-time event stream (SSE)",
+        "description": "Server-Sent Events stream. Pushes a `snapshot` event every sampling interval, plus `throttle`, `workload_start`, and `workload_end` events as they occur. Connect with EventSource or curl -N.",
+        "operationId": "getEvents",
+        "responses": {
+          "200": {
+            "description": "SSE stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "Server-Sent Events stream with event types: snapshot, throttle, workload_start, workload_end"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/openapi.json": {
+      "get": {
+        "summary": "OpenAPI specification",
+        "description": "Returns this OpenAPI 3.1 specification document.",
+        "operationId": "getOpenApiSpec",
+        "responses": {
+          "200": {
+            "description": "OpenAPI JSON spec",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "SystemInfo": {
+        "type": "object",
+        "properties": {
+          "hostname": { "type": "string", "example": "workstation-01" },
+          "cpu_model": { "type": "string", "example": "AMD Ryzen 9 7945HX with Radeon Graphics" },
+          "core_count": { "type": "integer", "example": 32 },
+          "max_freq_mhz": { "type": "integer", "example": 5462 },
+          "scaling_driver": { "type": "string", "example": "amd-pstate" },
+          "governor": { "type": "string", "example": "performance" },
+          "ram_gb": { "type": "number", "example": 28.6 },
+          "agent_version": { "type": "string", "example": "0.1.0" }
+        },
+        "required": ["hostname", "cpu_model", "core_count", "max_freq_mhz", "scaling_driver", "governor", "ram_gb", "agent_version"]
+      },
+      "CoreSnapshot": {
+        "type": "object",
+        "properties": {
+          "freq_mhz": { "type": "integer", "description": "Current frequency in MHz", "example": 4500 },
+          "util_pct": { "type": "number", "description": "Utilization percentage (0-100)", "example": 12.5 }
+        },
+        "required": ["freq_mhz", "util_pct"]
+      },
+      "Snapshot": {
+        "type": "object",
+        "properties": {
+          "timestamp_ms": { "type": "integer", "description": "Unix timestamp in milliseconds", "example": 1774065472188 },
+          "temp_c": { "type": "integer", "description": "CPU package temperature in Celsius", "example": 68 },
+          "temp_rate_cs": { "type": "integer", "description": "Temperature rate of change in centidegrees per second (divide by 100 for degrees C per second)", "example": -40 },
+          "ppt_watts": { "type": "number", "description": "CPU package power in watts (0 if RAPL unavailable)", "example": 42.1 },
+          "avg_freq_mhz": { "type": "integer", "description": "Average frequency across all cores in MHz", "example": 4489 },
+          "avg_util_pct": { "type": "number", "description": "Average utilization across all cores (0-100)", "example": 12.5 },
+          "fan_rpm": { "type": "integer", "description": "Fan speed in RPM (0 if no sensor)", "example": 1200 },
+          "fan_detected": { "type": "boolean", "description": "Whether a fan sensor was found" },
+          "throttle_active": { "type": "boolean", "description": "Whether CPU is currently throttling" },
+          "throttle_reason": { "type": "string", "enum": ["none", "thermal", "power"], "description": "Throttle classification" },
+          "peak_temp": { "type": "integer", "description": "Peak temperature since agent start", "example": 78 },
+          "peak_ppt": { "type": "number", "description": "Peak power since agent start", "example": 125.3 },
+          "peak_freq": { "type": "integer", "description": "Peak frequency since agent start", "example": 5462 },
+          "peak_fan": { "type": "integer", "description": "Peak fan RPM since agent start", "example": 2400 },
+          "thermal_events": { "type": "integer", "description": "Count of thermal throttle events" },
+          "power_events": { "type": "integer", "description": "Count of power throttle events" },
+          "energy_wh": { "type": "number", "description": "Cumulative energy consumption in watt-hours", "example": 1.42 },
+          "uptime_secs": { "type": "number", "description": "Agent uptime in seconds", "example": 3600.5 },
+          "cores": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/CoreSnapshot" },
+            "description": "Per-core frequency and utilization"
+          }
+        },
+        "required": ["timestamp_ms", "temp_c", "temp_rate_cs", "ppt_watts", "avg_freq_mhz", "avg_util_pct", "fan_rpm", "fan_detected", "throttle_active", "throttle_reason", "peak_temp", "peak_ppt", "peak_freq", "peak_fan", "thermal_events", "power_events", "energy_wh", "uptime_secs", "cores"]
+      },
+      "HistoryResponse": {
+        "type": "object",
+        "description": "Parallel arrays of historical samples for efficient charting. All arrays have the same length equal to samples.",
+        "properties": {
+          "interval_ms": { "type": "integer", "description": "Sampling interval in milliseconds", "example": 500 },
+          "samples": { "type": "integer", "description": "Number of samples in each array", "example": 120 },
+          "temp_c": { "type": "array", "items": { "type": "integer" }, "description": "Temperature history in Celsius" },
+          "avg_freq_mhz": { "type": "array", "items": { "type": "integer" }, "description": "Average frequency history in MHz" },
+          "ppt_watts": { "type": "array", "items": { "type": "number" }, "description": "Power history in watts" },
+          "avg_util_pct": { "type": "array", "items": { "type": "number" }, "description": "Average utilization history (0-100)" },
+          "fan_rpm": { "type": "array", "items": { "type": "integer" }, "description": "Fan RPM history" }
+        },
+        "required": ["interval_ms", "samples", "temp_c", "avg_freq_mhz", "ppt_watts", "avg_util_pct", "fan_rpm"]
+      },
+      "ThrottleEvent": {
+        "type": "object",
+        "description": "Emitted via SSE when throttling begins",
+        "properties": {
+          "reason": { "type": "string", "enum": ["thermal", "power"] },
+          "temp_c": { "type": "integer", "example": 92 },
+          "ppt_watts": { "type": "number", "example": 125.0 }
+        },
+        "required": ["reason", "temp_c", "ppt_watts"]
+      },
+      "WorkloadStartEvent": {
+        "type": "object",
+        "description": "Emitted via SSE when a workload is auto-detected",
+        "properties": {
+          "id": { "type": "integer", "example": 1 },
+          "start_time": { "type": "string", "example": "14:30:05" }
+        },
+        "required": ["id", "start_time"]
+      },
+      "WorkloadEndEvent": {
+        "type": "object",
+        "description": "Emitted via SSE when a detected workload ends",
+        "properties": {
+          "id": { "type": "integer", "example": 1 },
+          "start_time": { "type": "string", "example": "14:30:05" },
+          "end_time": { "type": "string", "example": "14:31:20" },
+          "duration_secs": { "type": "number", "example": 75.0 },
+          "peak_temp": { "type": "integer", "example": 82 },
+          "avg_temp": { "type": "number", "example": 76.5 },
+          "peak_ppt": { "type": "number", "example": 110.2 },
+          "avg_ppt": { "type": "number", "example": 85.4 },
+          "energy_wh": { "type": "number", "example": 1.78 },
+          "avg_freq": { "type": "integer", "example": 4800 },
+          "avg_util": { "type": "number", "example": 88.3 },
+          "thermal_events": { "type": "integer" },
+          "power_events": { "type": "integer" }
+        },
+        "required": ["id", "start_time", "end_time", "duration_secs", "peak_temp", "avg_temp", "peak_ppt", "avg_ppt", "energy_wh", "avg_freq", "avg_util", "thermal_events", "power_events"]
+      }
+    }
+  }
+}

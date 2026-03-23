@@ -1,0 +1,32 @@
+[package]
+name = "tephra-server"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+edition = "2021"
+
+[[bin]]
+name = "tephra"
+path = "src/main.rs"
+
+[lib]
+name = "tephra_server"
+path = "src/lib.rs"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+mdns-sd = "0.11"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+anyhow = "1"
+libc = "0.2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http = "1"
+http-body-util = "0.1"

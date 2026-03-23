@@ -1,0 +1,25 @@
+[package]
+name = "tephra-client"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+edition = "2024"
+
+[[bin]]
+name = "tephra-client"
+path = "src/main.rs"
+
+[dependencies]
+iced = { version = "0.14", features = ["canvas", "tokio", "advanced"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+reqwest-eventsource = "0.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+futures = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+dirs = "6"
+toml = "0.8"
