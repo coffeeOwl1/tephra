@@ -132,4 +132,5 @@ pub enum DetailTab {
     Overview,
     Cores,
     Events,
+    History,
 }

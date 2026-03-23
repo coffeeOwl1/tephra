@@ -55,7 +55,7 @@ pub fn view<'a>(app: &'a App, node: &'a NodeState, tab: DetailTab) -> Element<'a
     }
 
     // Keyboard hint bar
-    let hints = text("Esc=Dashboard  1/2/3=Tabs  ←/→=Nodes  r=Reset  p=Pause  c=Compact  w=Workloads")
+    let hints = text("Esc=Dashboard  1/2/3/4=Tabs  ←/→=Nodes  r=Reset  p=Pause  c=Compact  w=Workloads")
         .size(10)
         .color(colors::TEPHRA);
 
@@ -97,10 +97,13 @@ fn build_nav_bar<'a>(app: &'a App, node: &'a NodeState, active_tab: DetailTab) -
         .spacing(6)
         .align_y(iced::Alignment::Center);
 
-    // Throttle badge in breadcrumb — always visible across all tabs
-    if node.snapshot.as_ref().is_some_and(|s| s.throttle_active) {
+    // Throttle badge in breadcrumb — stays visible (dimmed) for 4s after throttle ends
+    let throttle_active = node.snapshot.as_ref().is_some_and(|s| s.throttle_active);
+    if throttle_active {
         let reason = node.snapshot.as_ref().map(|s| s.throttle_reason.as_str()).unwrap_or("");
-        breadcrumb = breadcrumb.push(throttle_badge(true, reason));
+        breadcrumb = breadcrumb.push(throttle_badge(reason, false));
+    } else if node.is_throttle_lingering() {
+        breadcrumb = breadcrumb.push(throttle_badge(&node.last_throttle_reason, true));
     }
 
     // Node tabs (for switching between nodes without going back to dashboard)
@@ -182,6 +185,7 @@ fn build_detail_tabs(active: DetailTab) -> Element<'static, Message> {
         (DetailTab::Overview, "Overview"),
         (DetailTab::Cores, "Cores"),
         (DetailTab::Events, "Events"),
+        (DetailTab::History, "History"),
     ];
 
     let mut tab_row = row![].spacing(2);
@@ -396,8 +400,10 @@ fn build_metrics_strip(node: &NodeState) -> Element<'_, Message> {
 
         let mut info_row = row![info_text].align_y(iced::Alignment::Center);
 
-        // Event counts right-justified on the same line
-        if snap.thermal_events > 0 || snap.power_events > 0 || node.throttle_ticks > 0 {
+        // Session-only event counts right-justified on the same line
+        let session_thermal = node.throttle_log.iter().filter(|e| e.reason == "thermal").count();
+        let session_power = node.throttle_log.iter().filter(|e| e.reason != "thermal").count();
+        if session_thermal > 0 || session_power > 0 || node.throttle_ticks > 0 {
             let throttle_time = node.throttle_secs();
             let time_str = if throttle_time > 0.0 {
                 format!(" | {:.1}s throttled", throttle_time)
@@ -405,11 +411,11 @@ fn build_metrics_strip(node: &NodeState) -> Element<'_, Message> {
                 String::new()
             };
             let events_text = text(format!(
-                "T:{} P:{}{}",
-                snap.thermal_events, snap.power_events, time_str
+                "Thermal: {} Power: {}{}",
+                session_thermal, session_power, time_str
             ))
             .size(11)
-            .color(if snap.thermal_events > 0 { colors::MAGMA } else { colors::TEPHRA });
+            .color(if session_thermal > 0 { colors::MAGMA } else { colors::TEPHRA });
             info_row = info_row
                 .push(Space::new().width(Length::Fill))
                 .push(events_text);
@@ -454,6 +460,7 @@ fn build_tab_content<'a>(node: &'a NodeState, tab: DetailTab, compact: bool) -> 
         DetailTab::Overview => build_overview(node, compact),
         DetailTab::Cores => build_cores(node),
         DetailTab::Events => build_events(node),
+        DetailTab::History => build_history(node),
     }
 }
 
@@ -521,9 +528,8 @@ fn build_overview<'a>(node: &'a NodeState, compact: bool) -> Element<'a, Message
     let mut chart_col = column![].spacing(16);
 
     // Temperature duration curve first (most important graph)
-    let peak = node.client_peak_temp();
-    if peak > 60 && !compact {
-        let duration_section = build_temp_duration(node, peak);
+    if !compact {
+        let duration_section = build_temp_duration(node);
         chart_col = chart_col.push(duration_section);
     }
 
@@ -575,26 +581,18 @@ fn build_overview<'a>(node: &'a NodeState, compact: bool) -> Element<'a, Message
     chart_col.into()
 }
 
-/// Temperature duration curve — matches reference implementation.
-/// Shows top 10 degrees from peak down, floor at 61°C.
+/// Temperature duration curve — fixed range from 60°C to 100°C in 10° steps.
+/// Temperature duration curve — rolling 10-degree window.
+/// Starts at 60–69°C (all zeros), slides up as peak rises. Never below 60°C.
 /// Bars represent longest continuous streak at-or-above each degree.
 /// Active portion (currently ongoing streak) shown with brighter color.
-fn build_temp_duration<'a>(node: &'a NodeState, peak: i32) -> Element<'a, Message> {
-    let max_temp = peak as u32;
-    if max_temp <= 60 {
-        return Space::new().into();
-    }
-
-    // Top 10 degrees, never below 61
-    let graph_rows = 10u32.min(max_temp - 60);
-    let top_temp = max_temp;
-    let bot_temp = max_temp - graph_rows + 1;
+fn build_temp_duration<'a>(node: &'a NodeState) -> Element<'a, Message> {
+    let peak = node.client_peak_temp();
+    let top_temp = peak.max(69) as u32;
+    let bot_temp = (top_temp - 9).max(60);
 
     // Normalize bar width to the longest streak at the bottom (widest) degree
     let max_streak = node.longest_streak_secs(bot_temp as i32);
-    if max_streak <= 0.0 {
-        return Space::new().into();
-    }
 
     let mut rows = column![
         text("Temp Duration (longest continuous / total at or above)")
@@ -608,7 +606,11 @@ fn build_temp_duration<'a>(node: &'a NodeState, peak: i32) -> Element<'a, Messag
         let total = node.cumulative_temp_secs(temp as i32);
         let current = node.current_streak_secs(temp as i32);
 
-        let ratio = (streak / max_streak).min(1.0) as f32;
+        let ratio = if max_streak > 0.0 {
+            (streak / max_streak).min(1.0) as f32
+        } else {
+            0.0
+        };
         let temp_color = colors::temp_color(temp as i32);
 
         // Split bar into active (current ongoing) and historical portions
@@ -887,6 +889,109 @@ fn build_events<'a>(node: &'a NodeState) -> Element<'a, Message> {
     ].spacing(16);
 
     content.into()
+}
+
+/// History tab: server-reported all-time stats from before this session.
+fn build_history<'a>(node: &'a NodeState) -> Element<'a, Message> {
+    let Some(snap) = &node.snapshot else {
+        return text("Waiting for data...").size(14).color(colors::TEPHRA).into();
+    };
+
+    let stat_row = |label: &'static str, value: String, color: iced::Color| -> Element<'a, Message> {
+        row![
+            container(text(label).size(12).color(colors::TEPHRA)).width(180),
+            text(value).size(12).color(color),
+        ]
+        .align_y(iced::Alignment::Center)
+        .spacing(8)
+        .into()
+    };
+
+    let mut col = column![
+        text("Server Lifetime Stats").size(14).color(colors::PUMICE),
+        text("Cumulative statistics reported by the server since it started.")
+            .size(11)
+            .color(colors::TEPHRA),
+        Space::new().height(8),
+    ]
+    .spacing(4);
+
+    col = col.push(stat_row(
+        "Uptime",
+        format_uptime(snap.uptime_secs),
+        colors::PUMICE,
+    ));
+    col = col.push(stat_row(
+        "Total energy consumed",
+        format!("{:.3} Wh", snap.energy_wh),
+        colors::PUMICE,
+    ));
+
+    col = col.push(Space::new().height(12));
+    col = col.push(text("All-Time Peaks").size(13).color(colors::PUMICE));
+
+    col = col.push(stat_row(
+        "Peak temperature",
+        format!("{}°C", snap.peak_temp),
+        colors::temp_color(snap.peak_temp),
+    ));
+    col = col.push(stat_row(
+        "Peak power draw",
+        format!("{:.1} W", snap.peak_ppt),
+        colors::power_color(snap.peak_ppt),
+    ));
+    col = col.push(stat_row(
+        "Peak frequency",
+        format!("{} MHz", snap.peak_freq),
+        colors::MINERAL,
+    ));
+    if snap.fan_detected {
+        col = col.push(stat_row(
+            "Peak fan speed",
+            format!("{} RPM", snap.peak_fan),
+            colors::PUMICE,
+        ));
+    }
+
+    col = col.push(Space::new().height(12));
+    col = col.push(text("Throttle History").size(13).color(colors::PUMICE));
+
+    col = col.push(stat_row(
+        "Thermal throttle events",
+        format!("{}", snap.thermal_events),
+        if snap.thermal_events > 0 { colors::MAGMA } else { colors::TEPHRA },
+    ));
+    col = col.push(stat_row(
+        "Power throttle events",
+        format!("{}", snap.power_events),
+        if snap.power_events > 0 { colors::COPPER } else { colors::TEPHRA },
+    ));
+
+    if let Some(info) = &node.system_info {
+        col = col.push(Space::new().height(12));
+        col = col.push(text("System").size(13).color(colors::PUMICE));
+
+        col = col.push(stat_row("CPU model", info.cpu_model.clone(), colors::PUMICE));
+        col = col.push(stat_row("Cores", format!("{}", info.core_count), colors::PUMICE));
+        col = col.push(stat_row("Max frequency", format!("{} MHz", info.max_freq_mhz), colors::PUMICE));
+        col = col.push(stat_row("Scaling driver", info.scaling_driver.clone(), colors::PUMICE));
+        col = col.push(stat_row("Governor", info.governor.clone(), colors::PUMICE));
+        col = col.push(stat_row("RAM", format!("{:.1} GB", info.ram_gb), colors::PUMICE));
+        col = col.push(stat_row("Agent version", info.agent_version.clone(), colors::PUMICE));
+    }
+
+    container(col.padding(12))
+        .width(Length::Fill)
+        .style(|_: &iced::Theme| container::Style {
+            background: Some(colors::BASALT.into()),
+            border: iced::Border {
+                color: colors::SCORIA,
+                width: 1.0,
+                radius: 8.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
 fn thermal_state_label(rate: f64) -> &'static str {

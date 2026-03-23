@@ -99,7 +99,9 @@ pub fn node_card(node: &NodeState) -> Element<'_, Message> {
 
         // Throttle badge (always reserve space for consistent card height)
         if snap.throttle_active {
-            col = col.push(throttle_badge(true, &snap.throttle_reason));
+            col = col.push(throttle_badge(&snap.throttle_reason, false));
+        } else if node.is_throttle_lingering() {
+            col = col.push(throttle_badge(&node.last_throttle_reason, true));
         } else {
             col = col.push(Space::new().height(18));
         }

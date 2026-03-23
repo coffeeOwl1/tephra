@@ -461,6 +461,11 @@ impl App {
                                 *tab = DetailTab::Events;
                             }
                         }
+                        "4" => {
+                            if let View::Detail { ref mut tab, .. } = self.current_view {
+                                *tab = DetailTab::History;
+                            }
+                        }
                         // 'a' — open add node dialog
                         "a" => {
                             self.show_add_dialog = true;

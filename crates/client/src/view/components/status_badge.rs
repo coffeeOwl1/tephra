@@ -68,16 +68,25 @@ pub fn status_badge_with_retry(
 }
 
 
-/// Throttle status badge — shows active throttle state.
-pub fn throttle_badge<'a>(active: bool, reason: &str) -> Element<'a, Message> {
-    if !active {
-        return Space::new().into();
-    }
-
-    let color = match reason {
+/// Throttle status badge — shows active or recently-ended throttle state.
+/// When `dimmed` is true, the badge is shown at half intensity (recently ended).
+pub fn throttle_badge<'a>(reason: &str, dimmed: bool) -> Element<'a, Message> {
+    let base_color = match reason {
         "thermal" => colors::ERUPTION,
         "power" => colors::COPPER,
         _ => colors::EMBER,
+    };
+
+    let color = if dimmed {
+        colors::with_alpha(base_color, 0.5)
+    } else {
+        base_color
+    };
+
+    let text_color = if dimmed {
+        Color { a: 0.6, ..Color::WHITE }
+    } else {
+        Color::WHITE
     };
 
     let label = match reason {
@@ -89,7 +98,7 @@ pub fn throttle_badge<'a>(active: bool, reason: &str) -> Element<'a, Message> {
     container(
         text(label)
             .size(10)
-            .color(Color::WHITE),
+            .color(text_color),
     )
     .padding([2, 8])
     .style(move |_theme: &iced::Theme| container::Style {

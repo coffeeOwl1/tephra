@@ -87,6 +87,9 @@ impl ChartCaches {
 pub struct ActiveWorkload {
     pub id: u32,
     pub start_time: String,
+    /// Whether this workload was started by a server SSE event (vs client-side detection).
+    /// Server-managed workloads are only ended by server `workload_end` events.
+    pub server_managed: bool,
 }
 
 /// All state for a single tephra-server node.
@@ -117,6 +120,10 @@ pub struct NodeState {
     prev_throttle: bool,
     /// Instant of last throttle state transition (for flash animation).
     pub throttle_changed_at: Option<Instant>,
+    /// Reason from the last throttle event (persists after throttle ends for lingering badge).
+    pub last_throttle_reason: String,
+    /// When throttle ended (for lingering dimmed badge).
+    pub throttle_ended_at: Option<Instant>,
     /// Temperature duration: ticks spent at exactly each degree [0..=105].
     pub temp_duration_ticks: [u32; 106],
     /// Current continuous streak at or above each degree [0..=105].
@@ -171,6 +178,8 @@ impl NodeState {
             throttle_ticks: 0,
             prev_throttle: false,
             throttle_changed_at: None,
+            last_throttle_reason: String::new(),
+            throttle_ended_at: None,
             temp_duration_ticks: [0; 106],
             temp_streak_current: [0; 106],
             temp_streak_max: [0; 106],
@@ -208,13 +217,21 @@ impl NodeState {
         // Track throttle state transitions
         if snap.throttle_active != self.prev_throttle {
             self.throttle_changed_at = Some(Instant::now());
-            // Track per-workload throttle events
-            if snap.throttle_active && self.active_workload.is_some() {
-                if snap.throttle_reason == "thermal" {
-                    self.workload_thermal_events += 1;
-                } else {
-                    self.workload_power_events += 1;
+            if snap.throttle_active {
+                // Rising edge: record reason, clear ended timestamp
+                self.last_throttle_reason = snap.throttle_reason.clone();
+                self.throttle_ended_at = None;
+                // Track per-workload throttle events
+                if self.active_workload.is_some() {
+                    if snap.throttle_reason == "thermal" {
+                        self.workload_thermal_events += 1;
+                    } else {
+                        self.workload_power_events += 1;
+                    }
                 }
+            } else {
+                // Falling edge: record when throttle ended
+                self.throttle_ended_at = Some(Instant::now());
             }
         }
         // Accumulate throttle time
@@ -257,8 +274,10 @@ impl NodeState {
         const START_TICKS: u32 = 10;
         const END_TICKS: u32 = 10;
 
-        if self.active_workload.is_some() {
-            // Track stats during active workload
+        if let Some(active) = &self.active_workload {
+            let server_managed = active.server_managed;
+
+            // Track stats during active workload (regardless of who started it).
             self.workload_snap_count += 1;
             self.workload_sum_temp += snap.temp_c as f64;
             self.workload_sum_ppt += snap.ppt_watts;
@@ -269,17 +288,20 @@ impl NodeState {
                 self.workload_peak_ppt = snap.ppt_watts;
             }
 
-            // Check for end
-            if snap.avg_util_pct < END_UTIL {
-                self.workload_low_util_ticks += 1;
-                if self.workload_low_util_ticks >= END_TICKS {
-                    self.finish_workload(snap);
+            // Only client-detected workloads are ended by client-side detection.
+            // Server-managed workloads wait for the server's workload_end event.
+            if !server_managed {
+                if snap.avg_util_pct < END_UTIL {
+                    self.workload_low_util_ticks += 1;
+                    if self.workload_low_util_ticks >= END_TICKS {
+                        self.finish_workload(snap);
+                    }
+                } else {
+                    self.workload_low_util_ticks = 0;
                 }
-            } else {
-                self.workload_low_util_ticks = 0;
             }
         } else {
-            // Check for start
+            // Check for start (only if the server hasn't started one already).
             if snap.avg_util_pct >= START_UTIL {
                 self.workload_high_util_ticks += 1;
                 if self.workload_high_util_ticks >= START_TICKS {
@@ -302,7 +324,7 @@ impl NodeState {
         let s = secs % 60;
         let start_time = format!("{h:02}:{m:02}:{s:02}");
 
-        self.active_workload = Some(ActiveWorkload { id, start_time });
+        self.active_workload = Some(ActiveWorkload { id, start_time, server_managed: false });
         self.workload_snap_count = 0;
         self.workload_sum_temp = 0.0;
         self.workload_sum_ppt = 0.0;
@@ -419,12 +441,29 @@ impl NodeState {
         self.active_workload = Some(ActiveWorkload {
             id: evt.id,
             start_time: evt.start_time,
+            server_managed: true,
         });
+        // Reset all client-side tracking so stats accumulate fresh for this workload.
+        self.workload_snap_count = 0;
+        self.workload_sum_temp = 0.0;
+        self.workload_sum_ppt = 0.0;
+        self.workload_sum_util = 0.0;
+        self.workload_sum_freq = 0.0;
+        self.workload_peak_temp = 0;
+        self.workload_peak_ppt = 0.0;
+        self.workload_energy_start = self.snapshot.as_ref().map_or(0.0, |s| s.energy_wh);
+        self.workload_thermal_events = 0;
+        self.workload_power_events = 0;
+        self.workload_low_util_ticks = 0;
+        self.workload_high_util_ticks = 0;
     }
 
     pub fn on_workload_end(&mut self, evt: WorkloadEndEvent) {
         self.active_workload = None;
         self.completed_workloads.push(evt);
+        // Reset detection state so client-side detection doesn't carry over stale ticks.
+        self.workload_low_util_ticks = 0;
+        self.workload_high_util_ticks = 0;
     }
 
     /// Reset all client-side accumulated state.
@@ -459,7 +498,7 @@ impl NodeState {
         self.last_viewed_workload_count = self.completed_workloads.len();
     }
 
-    /// Highest temperature the client has actually observed (from temp_duration_ticks).
+    /// Highest temperature the client has actually observed this session (from temp_duration_ticks).
     pub fn client_peak_temp(&self) -> i32 {
         for t in (0..=105).rev() {
             if self.temp_duration_ticks[t] > 0 {
@@ -478,6 +517,13 @@ impl NodeState {
     pub fn is_throttle_flashing(&self) -> bool {
         self.throttle_changed_at
             .is_some_and(|t| t.elapsed().as_secs_f64() < 2.0)
+    }
+
+    /// Whether a recently-ended throttle event should still be shown (dimmed).
+    /// Returns true for 4 seconds after throttle ends.
+    pub fn is_throttle_lingering(&self) -> bool {
+        self.throttle_ended_at
+            .is_some_and(|t| t.elapsed().as_secs_f64() < 4.0)
     }
 }
 
