@@ -6,12 +6,20 @@ use crate::message::Message;
 use crate::theme::colors;
 use crate::view::node_card::node_card;
 
-/// The dashboard view: header + grid of node cards.
-pub fn view(app: &App) -> Element<'_, Message> {
-    // -- Header --
-    let title = text("tephra")
-        .size(28)
-        .color(colors::EMBER);
+/// Shared global header used across all views.
+/// `show_compare` controls whether the Compare button is visible.
+pub fn global_header(app: &App, show_compare: bool) -> Element<'_, Message> {
+    let title = button(
+        text("tephra")
+            .size(28)
+            .color(colors::EMBER),
+    )
+    .on_press(Message::NavigateDashboard)
+    .padding([0, 0])
+    .style(|_theme: &iced::Theme, _status| button::Style {
+        background: None,
+        ..Default::default()
+    });
 
     let node_count = text(format!(
         "{} node{}",
@@ -45,40 +53,48 @@ pub fn view(app: &App) -> Element<'_, Message> {
         }
     });
 
-    let compare_btn = button(
-        text("Compare")
-            .size(13)
-            .color(colors::MINERAL),
-    )
-    .on_press(Message::NavigateCompare)
-    .padding([6, 16])
-    .style(|_theme: &iced::Theme, status| {
-        let border_color = match status {
-            button::Status::Hovered => colors::MINERAL,
-            _ => colors::SCORIA,
-        };
-        button::Style {
-            background: None,
-            border: iced::Border {
-                color: border_color,
-                width: 1.0,
-                radius: 6.0.into(),
-            },
-            text_color: colors::MINERAL,
-            ..Default::default()
-        }
-    });
-
-    let header = row![
+    let mut header = row![
         title,
         Space::new().width(12),
         node_count,
         Space::new().width(Length::Fill),
-        compare_btn,
-        Space::new().width(8),
-        add_btn,
     ]
     .align_y(iced::Alignment::Center);
+
+    if show_compare {
+        let compare_btn = button(
+            text("Compare")
+                .size(13)
+                .color(colors::MINERAL),
+        )
+        .on_press(Message::NavigateCompare)
+        .padding([6, 16])
+        .style(|_theme: &iced::Theme, status| {
+            let border_color = match status {
+                button::Status::Hovered => colors::MINERAL,
+                _ => colors::SCORIA,
+            };
+            button::Style {
+                background: None,
+                border: iced::Border {
+                    color: border_color,
+                    width: 1.0,
+                    radius: 6.0.into(),
+                },
+                text_color: colors::MINERAL,
+                ..Default::default()
+            }
+        });
+        header = header.push(compare_btn);
+        header = header.push(Space::new().width(8));
+    }
+
+    header.push(add_btn).into()
+}
+
+/// The dashboard view: header + grid of node cards.
+pub fn view(app: &App) -> Element<'_, Message> {
+    let header = global_header(app, true);
 
     // -- Node cards grid --
     // Use a simple responsive column layout:

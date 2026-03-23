@@ -7,6 +7,7 @@ use crate::node::NodeState;
 use crate::theme::colors;
 use crate::view::components::metric_pill::{metric_pill, metric_pill_styled};
 use crate::view::components::status_badge::{status_badge_with_retry, throttle_badge};
+use crate::view::dashboard::global_header;
 
 /// The detail view for a single node.
 pub fn view<'a>(app: &'a App, node: &'a NodeState, tab: DetailTab) -> Element<'a, Message> {
@@ -59,7 +60,7 @@ pub fn view<'a>(app: &'a App, node: &'a NodeState, tab: DetailTab) -> Element<'a
         .size(10)
         .color(colors::TEPHRA);
 
-    let content = column![nav_bar, header_items, metrics_strip, tab_content, hints]
+    let content = column![global_header(app, true), nav_bar, header_items, metrics_strip, tab_content, hints]
         .spacing(16)
         .padding(24);
 

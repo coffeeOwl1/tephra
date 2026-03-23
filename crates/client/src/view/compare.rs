@@ -5,39 +5,14 @@ use crate::app::App;
 use crate::message::{EventFilter, Message, SummaryColumn};
 use crate::theme::colors;
 use crate::view::charts::multi_line_chart::{multi_line_chart, ChartSeries, MultiLineConfig};
+use crate::view::dashboard::global_header;
 
 /// The comparison dashboard — all nodes overlaid on shared charts.
 pub fn view(app: &App) -> Element<'_, Message> {
-    let back_btn = button(text("Dashboard").size(13).color(colors::TEPHRA))
-        .on_press(Message::NavigateDashboard)
-        .padding([4, 8])
-        .style(|_: &iced::Theme, status| {
-            let text_color = match status {
-                button::Status::Hovered => colors::EMBER,
-                _ => colors::TEPHRA,
-            };
-            button::Style {
-                background: None,
-                text_color,
-                ..Default::default()
-            }
-        });
+    let top_header = global_header(app, false);
 
-    let title = text("Node Comparison").size(20).color(colors::PUMICE);
-    let node_count = text(format!(
-        "{} node{}",
-        app.nodes.len(),
-        if app.nodes.len() == 1 { "" } else { "s" }
-    ))
-    .size(13)
-    .color(colors::TEPHRA);
-
-    let header = row![
-        back_btn,
-        text(" / ").size(13).color(colors::SCORIA),
-        title,
-        Space::new().width(12),
-        node_count,
+    let sub_header = row![
+        text("Node Comparison").size(20).color(colors::PUMICE),
     ]
     .align_y(iced::Alignment::Center);
 
@@ -51,7 +26,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
 
     if nodes.is_empty() {
         let content = column![
-            header,
+            top_header,
+            sub_header,
             Space::new().height(60),
             text("No nodes to compare").size(16).color(colors::TEPHRA),
         ]
@@ -188,7 +164,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .color(colors::TEPHRA);
 
     let content = column![
-        header,
+        top_header,
+        sub_header,
         aggregates,
         summary,
         stats_row,
