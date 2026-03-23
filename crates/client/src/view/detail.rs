@@ -67,48 +67,10 @@ pub fn view<'a>(app: &'a App, node: &'a NodeState, tab: DetailTab) -> Element<'a
     scrollable(content).into()
 }
 
-/// Top navigation: breadcrumb + node tab strip.
+/// Top navigation: node tab strip + status/remove.
 fn build_nav_bar<'a>(app: &'a App, node: &'a NodeState, active_tab: DetailTab) -> Element<'a, Message> {
-    // Breadcrumb: Dashboard > hostname
-    let back_btn = button(
-        text("Dashboard")
-            .size(13)
-            .color(colors::TEPHRA),
-    )
-    .on_press(Message::NavigateDashboard)
-    .padding([4, 8])
-    .style(|_theme: &iced::Theme, status| {
-        let text_color = match status {
-            button::Status::Hovered => colors::EMBER,
-            _ => colors::TEPHRA,
-        };
-        button::Style {
-            background: None,
-            text_color,
-            ..Default::default()
-        }
-    });
-
-    let separator = text(" / ").size(13).color(colors::SCORIA);
-    let current_node = text(node.display_name())
-        .size(13)
-        .color(colors::PUMICE);
-
-    let mut breadcrumb = row![back_btn, separator, current_node]
-        .spacing(6)
-        .align_y(iced::Alignment::Center);
-
-    // Throttle badge in breadcrumb — stays visible (dimmed) for 4s after throttle ends
-    let throttle_active = node.snapshot.as_ref().is_some_and(|s| s.throttle_active);
-    if throttle_active {
-        let reason = node.snapshot.as_ref().map(|s| s.throttle_reason.as_str()).unwrap_or("");
-        breadcrumb = breadcrumb.push(throttle_badge(reason, false));
-    } else if node.is_throttle_lingering() {
-        breadcrumb = breadcrumb.push(throttle_badge(&node.last_throttle_reason, true));
-    }
-
     // Node tabs (for switching between nodes without going back to dashboard)
-    let mut node_tabs = row![].spacing(4);
+    let mut top_row = row![].spacing(4).align_y(iced::Alignment::Center);
     for id in &app.node_order {
         if let Some(n) = app.nodes.get(id) {
             let is_active = n.id == node.id;
@@ -139,12 +101,20 @@ fn build_nav_bar<'a>(app: &'a App, node: &'a NodeState, active_tab: DetailTab) -
                     ..Default::default()
                 }
             });
-            node_tabs = node_tabs.push(tab_btn);
+            top_row = top_row.push(tab_btn);
         }
     }
 
-    // Detail tabs: Overview | Cores | Events
-    let detail_tabs = build_detail_tabs(active_tab);
+    // Throttle badge — stays visible (dimmed) for 4s after throttle ends
+    let throttle_active = node.snapshot.as_ref().is_some_and(|s| s.throttle_active);
+    if throttle_active {
+        let reason = node.snapshot.as_ref().map(|s| s.throttle_reason.as_str()).unwrap_or("");
+        top_row = top_row.push(Space::new().width(8));
+        top_row = top_row.push(throttle_badge(reason, false));
+    } else if node.is_throttle_lingering() {
+        top_row = top_row.push(Space::new().width(8));
+        top_row = top_row.push(throttle_badge(&node.last_throttle_reason, true));
+    }
 
     let status = status_badge_with_retry(&node.status, node.id);
 
@@ -170,14 +140,18 @@ fn build_nav_bar<'a>(app: &'a App, node: &'a NodeState, active_tab: DetailTab) -
         }
     });
 
-    column![
-        row![breadcrumb, Space::new().width(Length::Fill), status, Space::new().width(8), remove_btn]
-            .align_y(iced::Alignment::Center),
-        node_tabs,
-        detail_tabs,
-    ]
-    .spacing(8)
-    .into()
+    top_row = top_row
+        .push(Space::new().width(Length::Fill))
+        .push(status)
+        .push(Space::new().width(8))
+        .push(remove_btn);
+
+    // Detail tabs: Overview | Cores | Events | History
+    let detail_tabs = build_detail_tabs(active_tab);
+
+    column![top_row, detail_tabs]
+        .spacing(8)
+        .into()
 }
 
 /// Overview | Cores | Events tab strip.
