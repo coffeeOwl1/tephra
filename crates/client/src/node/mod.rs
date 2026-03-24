@@ -83,6 +83,13 @@ impl ChartCaches {
     }
 }
 
+/// A throttle event with the wall-clock time it was received by the client.
+#[derive(Debug, Clone)]
+pub struct TimestampedThrottle {
+    pub event: ThrottleEvent,
+    pub received_at: chrono::DateTime<chrono::Local>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ActiveWorkload {
     pub id: u32,
@@ -104,7 +111,7 @@ pub struct NodeState {
     pub version_warning: Option<String>,
     pub snapshot: Option<Snapshot>,
     pub history: TimeSeriesStore,
-    pub throttle_log: Vec<ThrottleEvent>,
+    pub throttle_log: Vec<TimestampedThrottle>,
     pub completed_workloads: Vec<WorkloadEndEvent>,
     /// Counts at last detail view visit (for notification badges).
     pub last_viewed_throttle_count: usize,
@@ -440,7 +447,10 @@ impl NodeState {
     }
 
     pub fn on_throttle(&mut self, evt: ThrottleEvent) {
-        self.throttle_log.push(evt);
+        self.throttle_log.push(TimestampedThrottle {
+            event: evt,
+            received_at: chrono::Local::now(),
+        });
     }
 
     pub fn on_workload_start(&mut self, evt: WorkloadStartEvent) {

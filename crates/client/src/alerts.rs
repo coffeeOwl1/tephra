@@ -124,18 +124,22 @@ pub enum PendingNotification {
         node_name: String,
         temp: i32,
         ceiling: i32,
+        timestamp: chrono::DateTime<chrono::Local>,
     },
     Throttle {
         node_name: String,
         reason: String,
         temp: i32,
+        timestamp: chrono::DateTime<chrono::Local>,
     },
     WorkloadComplete {
         node_name: String,
         duration_secs: f64,
+        timestamp: chrono::DateTime<chrono::Local>,
     },
     ConnectionLost {
         node_name: String,
+        timestamp: chrono::DateTime<chrono::Local>,
     },
 }
 
@@ -162,6 +166,7 @@ pub fn check_alerts(defaults: &AlertDefaults, node: &mut NodeState) -> Vec<Alert
                     node_name: node.display_name(),
                     temp: snap.temp_c,
                     ceiling: resolved.temp_ceiling,
+                    timestamp: chrono::Local::now(),
                 },
                 persistent: defaults.temp_persistent,
             });
@@ -175,7 +180,8 @@ pub fn check_alerts(defaults: &AlertDefaults, node: &mut NodeState) -> Vec<Alert
         let new_count = node.throttle_log.len();
         let old_count = node.alert_state.notified_throttle_count;
         if new_count > old_count {
-            for evt in &node.throttle_log[old_count..new_count] {
+            for ts_evt in &node.throttle_log[old_count..new_count] {
+                let evt = &ts_evt.event;
                 let (enabled, persistent) = match evt.reason.as_str() {
                     "thermal" => (resolved.throttle_thermal, defaults.throttle_thermal_persistent),
                     "power" => (resolved.throttle_power, defaults.throttle_power_persistent),
@@ -187,6 +193,7 @@ pub fn check_alerts(defaults: &AlertDefaults, node: &mut NodeState) -> Vec<Alert
                             node_name: node.display_name(),
                             reason: evt.reason.clone(),
                             temp: evt.temp_c,
+                            timestamp: ts_evt.received_at,
                         },
                         persistent,
                     });
@@ -206,6 +213,7 @@ pub fn check_alerts(defaults: &AlertDefaults, node: &mut NodeState) -> Vec<Alert
                 notification: PendingNotification::WorkloadComplete {
                     node_name: node.display_name(),
                     duration_secs: wl.duration_secs,
+                    timestamp: chrono::Local::now(),
                 },
                 persistent: defaults.workload_persistent,
             });
@@ -220,6 +228,7 @@ pub fn check_alerts(defaults: &AlertDefaults, node: &mut NodeState) -> Vec<Alert
             pending.push(AlertNotification {
                 notification: PendingNotification::ConnectionLost {
                     node_name: node.display_name(),
+                    timestamp: chrono::Local::now(),
                 },
                 persistent: defaults.connection_persistent,
             });
@@ -257,28 +266,54 @@ fn format_notification(n: &PendingNotification) -> (String, String) {
             node_name,
             temp,
             ceiling,
-        } => (
-            format!("Tephra \u{2014} {node_name}"),
-            format!("Temperature {temp}\u{00b0}C exceeded ceiling ({ceiling}\u{00b0}C)"),
-        ),
+            timestamp,
+        } => {
+            let time = timestamp.format("%-I:%M %p");
+            (
+                format!("Tephra \u{2014} {node_name}"),
+                format!("Temperature {temp}\u{00b0}C exceeded ceiling ({ceiling}\u{00b0}C) at {time}"),
+            )
+        }
         PendingNotification::Throttle {
             node_name,
             reason,
             temp,
-        } => (
-            format!("Tephra \u{2014} {node_name}"),
-            format!("Throttle event: {reason} at {temp}\u{00b0}C"),
-        ),
+            timestamp,
+        } => {
+            let time = timestamp.format("%-I:%M %p");
+            (
+                format!("Tephra \u{2014} {node_name}"),
+                format!("{} throttle at {time} \u{2014} {temp}\u{00b0}C", capitalize(reason)),
+            )
+        }
         PendingNotification::WorkloadComplete {
             node_name,
             duration_secs,
-        } => (
-            format!("Tephra \u{2014} {node_name}"),
-            format!("Workload completed in {duration_secs:.0}s"),
-        ),
-        PendingNotification::ConnectionLost { node_name } => (
-            format!("Tephra \u{2014} {node_name}"),
-            "Connection lost".to_string(),
-        ),
+            timestamp,
+        } => {
+            let time = timestamp.format("%-I:%M %p");
+            (
+                format!("Tephra \u{2014} {node_name}"),
+                format!("Workload completed in {duration_secs:.0}s at {time}"),
+            )
+        }
+        PendingNotification::ConnectionLost {
+            node_name,
+            timestamp,
+        } => {
+            let time = timestamp.format("%-I:%M %p");
+            (
+                format!("Tephra \u{2014} {node_name}"),
+                format!("Connection lost at {time}"),
+            )
+        }
+    }
+}
+
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().to_string() + c.as_str(),
     }
 }

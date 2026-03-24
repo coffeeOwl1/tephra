@@ -3,6 +3,7 @@ use iced::{Color, Element, Length};
 
 use crate::app::App;
 use crate::message::{EventFilter, Message, SummaryColumn};
+use crate::node::NodeId;
 use crate::theme::colors;
 use crate::view::charts::multi_line_chart::{multi_line_chart, ChartSeries, MultiLineConfig};
 use crate::view::dashboard::global_header;
@@ -181,6 +182,27 @@ pub fn view(app: &App) -> Element<'_, Message> {
 }
 
 /// Summary table: one row per node with key metrics, sortable by column.
+/// Clickable node name that navigates to the node's detail overview.
+fn node_name_btn(name: &str, size: f32, color: Color, node_id: NodeId) -> Element<'static, Message> {
+    let name = name.to_string();
+    button(text(name).size(size).color(color))
+        .on_press(Message::NavigateDetail(node_id))
+        .padding(0)
+        .style(move |_theme: &iced::Theme, status| {
+            let text_color = match status {
+                button::Status::Hovered => colors::EMBER,
+                _ => color,
+            };
+            button::Style {
+                background: None,
+                border: iced::Border::default(),
+                text_color,
+                ..Default::default()
+            }
+        })
+        .into()
+}
+
 fn build_summary_table<'a>(
     nodes: &[(usize, &crate::node::NodeState)],
     names: &[String],
@@ -359,7 +381,7 @@ fn build_summary_table<'a>(
 
             col = col.push(
                 row![
-                    container(text(names[i].clone()).size(11).color(color)).width(110),
+                    container(node_name_btn(&names[i], 11.0, color, node.id)).width(110),
                     container(text(cores_str).size(11).color(colors::TEPHRA)).width(42),
                     container(
                         text(format!("{}°C", snap.temp_c))
@@ -421,7 +443,7 @@ fn build_summary_table<'a>(
         } else {
             col = col.push(
                 row![
-                    container(text(names[i].clone()).size(11).color(color)).width(110),
+                    container(node_name_btn(&names[i], 11.0, color, node.id)).width(110),
                     text("connecting...").size(11).color(colors::TEPHRA),
                 ]
                 .spacing(4),
@@ -478,12 +500,12 @@ fn build_thermal_ranking<'a>(
     nodes: &[(usize, &crate::node::NodeState)],
     names: &[String],
 ) -> Element<'a, Message> {
-    let mut entries: Vec<(String, i32, iced::Color)> = nodes
+    let mut entries: Vec<(String, i32, iced::Color, NodeId)> = nodes
         .iter()
         .enumerate()
         .filter_map(|(i, (idx, n))| {
             let temp = n.snapshot.as_ref()?.temp_c;
-            Some((names[i].clone(), temp, colors::node_color(*idx)))
+            Some((names[i].clone(), temp, colors::node_color(*idx), n.id))
         })
         .collect();
     entries.sort_by(|a, b| b.1.cmp(&a.1)); // hottest first
@@ -503,7 +525,7 @@ fn build_thermal_ranking<'a>(
     ]
     .spacing(4);
 
-    for (name, temp, color) in &entries {
+    for (name, temp, color, node_id) in &entries {
         let ratio = (*temp as f32 / max_temp).clamp(0.0, 1.0);
         let bar_pct = (ratio * 100.0) as u16 + 1;
         let empty_pct = 100u16.saturating_sub(bar_pct).max(1);
@@ -519,7 +541,7 @@ fn build_thermal_ranking<'a>(
 
         col = col.push(
             row![
-                container(text(name.clone()).size(10).color(*color)).width(100),
+                container(node_name_btn(name, 10.0, *color, *node_id)).width(100),
                 bar,
                 Space::new().width(Length::FillPortion(empty_pct)),
                 text(format!("{}°C", temp)).size(10).color(temp_color),
@@ -645,7 +667,7 @@ fn build_event_console<'a>(
     filter: EventFilter,
 ) -> Element<'a, Message> {
     // Collect all throttle events with node info, newest first
-    let mut events: Vec<(String, Color, String)> = Vec::new();
+    let mut events: Vec<(String, Color, String, NodeId)> = Vec::new();
 
     for (i, (idx, node)) in nodes.iter().enumerate() {
         let color = colors::node_color(*idx);
@@ -670,13 +692,15 @@ fn build_event_console<'a>(
                             snap.temp_c,
                             snap.ppt_watts,
                         ),
+                        node.id,
                     ));
                 }
             }
         }
 
         // Historical throttle events (most recent first, limit 20 per node)
-        for evt in node.throttle_log.iter().rev().take(20) {
+        for ts_evt in node.throttle_log.iter().rev().take(20) {
+            let evt = &ts_evt.event;
             let reason_lc = evt.reason.to_lowercase();
             let matches = match filter {
                 EventFilter::All => true,
@@ -691,15 +715,18 @@ fn build_event_console<'a>(
             } else {
                 colors::COPPER
             };
+            let time = ts_evt.received_at.format("%-I:%M:%S %p");
             events.push((
                 name.clone(),
                 reason_color,
                 format!(
-                    "{} — {}°C {:.1}W",
+                    "{} {} — {}°C {:.1}W",
+                    time,
                     evt.reason.to_uppercase(),
                     evt.temp_c,
                     evt.ppt_watts,
                 ),
+                node.id,
             ));
         }
     }
@@ -755,17 +782,12 @@ fn build_event_console<'a>(
             .padding([4, 12]),
         );
     } else {
-        for (name, color, detail) in &events {
+        for (name, color, detail, node_id) in &events {
             let event_row = container(
                 row![
                     text(">").size(10).color(colors::SCORIA),
-                    container(
-                        text(name.clone())
-                            .size(10)
-                            .color(*color)
-                            .font(iced::Font::MONOSPACE),
-                    )
-                    .width(90),
+                    container(node_name_btn(name, 10.0, *color, *node_id))
+                        .width(90),
                     text(detail.clone())
                         .size(10)
                         .color(*color)

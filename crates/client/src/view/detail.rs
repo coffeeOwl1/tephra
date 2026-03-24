@@ -377,8 +377,8 @@ fn build_metrics_strip(node: &NodeState) -> Element<'_, Message> {
         let mut info_row = row![info_text].align_y(iced::Alignment::Center);
 
         // Session-only event counts right-justified on the same line
-        let session_thermal = node.throttle_log.iter().filter(|e| e.reason == "thermal").count();
-        let session_power = node.throttle_log.iter().filter(|e| e.reason != "thermal").count();
+        let session_thermal = node.throttle_log.iter().filter(|e| e.event.reason == "thermal").count();
+        let session_power = node.throttle_log.iter().filter(|e| e.event.reason != "thermal").count();
         if session_thermal > 0 || session_power > 0 || node.throttle_ticks > 0 {
             let throttle_time = node.throttle_secs();
             let time_str = if throttle_time > 0.0 {
@@ -729,15 +729,19 @@ fn build_events<'a>(node: &'a NodeState) -> Element<'a, Message> {
             text("No throttle events recorded").size(12).color(colors::TEPHRA),
         );
     } else {
-        for evt in node.throttle_log.iter().rev().take(30) {
+        for ts_evt in node.throttle_log.iter().rev().take(30) {
+            let evt = &ts_evt.event;
             let (icon, color) = if evt.reason == "thermal" {
                 ("T", colors::MAGMA)
             } else {
                 ("P", colors::COPPER)
             };
+            let time = ts_evt.received_at.format("%-I:%M:%S %p").to_string();
             let evt_row = container(
                 row![
                     text(icon).size(12).color(color),
+                    Space::new().width(8),
+                    text(time).size(11).color(colors::TEPHRA),
                     Space::new().width(8),
                     text(format!("{}°C", evt.temp_c)).size(12).color(colors::PUMICE),
                     Space::new().width(8),

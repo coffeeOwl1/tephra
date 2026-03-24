@@ -662,6 +662,7 @@ impl App {
                             node_name: "Test".to_string(),
                             temp: 85,
                             ceiling: 85,
+                            timestamp: chrono::Local::now(),
                         },
                         persistent: false,
                     },
