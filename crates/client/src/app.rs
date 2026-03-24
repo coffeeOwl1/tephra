@@ -46,6 +46,7 @@ pub enum View {
     Dashboard,
     Detail { node_id: NodeId, tab: DetailTab },
     Compare,
+    Settings,
 }
 
 /// Main application state.
@@ -77,6 +78,10 @@ pub struct App {
     pub console_filter: EventFilter,
     /// Summary table sort column and ascending flag.
     pub summary_sort: (SummaryColumn, bool),
+    /// Global alert defaults.
+    pub alert_defaults: crate::alerts::AlertDefaults,
+    /// Pending alert overrides from config (applied when nodes are added).
+    pending_alert_overrides: std::collections::HashMap<String, crate::alerts::AlertOverrides>,
 }
 
 impl App {
@@ -106,6 +111,8 @@ impl App {
             history_capacity: crate::node::history::TimeSeriesStore::DEFAULT_CAPACITY,
             console_filter: EventFilter::default(),
             summary_sort: (SummaryColumn::default(), false), // Temp descending
+            alert_defaults: crate::alerts::AlertDefaults::default(),
+            pending_alert_overrides: std::collections::HashMap::new(),
         };
 
         // Load saved nodes from config
@@ -113,11 +120,16 @@ impl App {
         if let Some(cap) = loaded.history_capacity {
             app.history_capacity = cap;
         }
+        app.alert_defaults = loaded.alert_defaults;
         let saved = loaded.nodes;
         for sn in &saved {
             if let Some(name) = &sn.display_name {
                 app.pending_display_names
                     .insert(sn.addr.to_string(), name.clone());
+            }
+            if let Some(overrides) = &sn.alert_overrides {
+                app.pending_alert_overrides
+                    .insert(sn.addr.to_string(), overrides.clone());
             }
         }
         // Collect saved node addresses for localhost check
@@ -155,7 +167,8 @@ impl App {
                     "Tephra".to_string()
                 }
             }
-            View::Compare => "Tephra — Compare".to_string(),
+            View::Compare => "Tephra \u{2014} Compare".to_string(),
+            View::Settings => "Tephra \u{2014} Settings".to_string(),
         }
     }
 
@@ -171,15 +184,19 @@ impl App {
                 }
                 let id = NodeId::new();
                 let mut node = NodeState::with_capacity(id, addr, self.history_capacity);
-                // Apply pending display name from config
-                if let Some(name) = self.pending_display_names.remove(&addr.to_string()) {
+                // Apply pending display name and alert overrides from config
+                let addr_str = addr.to_string();
+                if let Some(name) = self.pending_display_names.remove(&addr_str) {
                     node.custom_name = Some(name);
+                }
+                if let Some(overrides) = self.pending_alert_overrides.remove(&addr_str) {
+                    node.alert_overrides = overrides;
                 }
                 self.nodes.insert(id, node);
                 self.node_order.push(id);
                 self.show_add_dialog = false;
                 self.add_dialog_input.clear();
-                self.save_nodes();
+                self.save_config_full();
                 Task::none()
             }
 
@@ -198,7 +215,7 @@ impl App {
             Message::RemoveNode(id) => {
                 self.nodes.remove(&id);
                 self.node_order.retain(|nid| *nid != id);
-                self.save_nodes();
+                self.save_config_full();
                 if let View::Detail { node_id, .. } = &self.current_view {
                     if *node_id == id {
                         self.current_view = View::Dashboard;
@@ -217,7 +234,7 @@ impl App {
             Message::SetDisplayName(id, name) => {
                 if let Some(node) = self.nodes.get_mut(&id) {
                     node.custom_name = name;
-                    self.save_nodes();
+                    self.save_config_full();
                 }
                 Task::none()
             }
@@ -243,7 +260,7 @@ impl App {
                         }
                         self.nodes.remove(&id);
                         self.node_order.retain(|nid| *nid != id);
-                        self.save_nodes();
+                        self.save_config_full();
                         return Task::none();
                     }
                 }
@@ -338,6 +355,17 @@ impl App {
                             node.status =
                                 crate::node::ConnectionStatus::Failed(reason);
                         }
+                    }
+
+                }
+                // Evaluate and dispatch alerts (re-acquire borrow to avoid
+                // conflict with fleet_sum's immutable borrow of self.nodes)
+                if let Some(node) = self.nodes.get_mut(&id) {
+                    let alerts =
+                        crate::alerts::check_alerts(&self.alert_defaults, node);
+                    let timeout = self.alert_defaults.notification_timeout_secs;
+                    for alert in alerts {
+                        crate::alerts::send_notification(alert, timeout);
                     }
                 }
                 Task::none()
@@ -438,7 +466,7 @@ impl App {
                             self.workload_overlay_idx = None;
                         } else if matches!(
                             self.current_view,
-                            View::Detail { .. } | View::Compare
+                            View::Detail { .. } | View::Compare | View::Settings
                         ) {
                             self.current_view = View::Dashboard;
                         }
@@ -464,6 +492,11 @@ impl App {
                         "4" => {
                             if let View::Detail { ref mut tab, .. } = self.current_view {
                                 *tab = DetailTab::History;
+                            }
+                        }
+                        "5" => {
+                            if let View::Detail { ref mut tab, .. } = self.current_view {
+                                *tab = DetailTab::Alerts;
                             }
                         }
                         // 'a' — open add node dialog
@@ -594,6 +627,48 @@ impl App {
                 }
                 Task::none()
             }
+
+            Message::NavigateSettings => {
+                self.current_view = View::Settings;
+                Task::none()
+            }
+
+            Message::UpdateAlertDefaults(defaults) => {
+                self.alert_defaults = defaults;
+                self.save_config_full();
+                Task::none()
+            }
+
+            Message::SetNodeAlertOverride(id, overrides) => {
+                if let Some(node) = self.nodes.get_mut(&id) {
+                    node.alert_overrides = overrides;
+                    self.save_config_full();
+                }
+                Task::none()
+            }
+
+            Message::ClearNodeAlertOverrides(id) => {
+                if let Some(node) = self.nodes.get_mut(&id) {
+                    node.alert_overrides = Default::default();
+                    self.save_config_full();
+                }
+                Task::none()
+            }
+
+            Message::SendTestNotification => {
+                crate::alerts::send_notification(
+                    crate::alerts::AlertNotification {
+                        notification: crate::alerts::PendingNotification::TempCeiling {
+                            node_name: "Test".to_string(),
+                            temp: 85,
+                            ceiling: 85,
+                        },
+                        persistent: false,
+                    },
+                    self.alert_defaults.notification_timeout_secs,
+                );
+                Task::none()
+            }
         }
     }
 
@@ -608,6 +683,7 @@ impl App {
                 }
             }
             View::Compare => view::compare::view(self),
+            View::Settings => view::settings::view(self),
         };
 
         // Check for overlays
@@ -666,15 +742,28 @@ impl App {
         Subscription::batch(node_subs.into_iter().chain(std::iter::once(keyboard_sub)))
     }
 
-    /// Save current node addresses and display names to config file.
-    fn save_nodes(&self) {
-        let entries: Vec<(String, Option<String>)> = self
+    /// Save full config (nodes, alert defaults, per-node overrides) to disk.
+    fn save_config_full(&self) {
+        let nodes: Vec<SavedNodeV2> = self
             .node_order
             .iter()
             .filter_map(|id| self.nodes.get(id))
-            .map(|n| (n.addr.to_string(), n.custom_name.clone()))
+            .map(|n| SavedNodeV2 {
+                addr: n.addr.to_string(),
+                display_name: n.custom_name.clone(),
+                alerts: if n.alert_overrides.has_any() {
+                    Some(n.alert_overrides.clone())
+                } else {
+                    None
+                },
+            })
             .collect();
-        save_config(&entries);
+        let cfg = SavedConfigV2 {
+            version: CONFIG_VERSION,
+            alerts: self.alert_defaults.clone(),
+            nodes,
+        };
+        write_config_v2(&cfg);
     }
 }
 
@@ -684,117 +773,167 @@ fn config_path() -> Option<std::path::PathBuf> {
 }
 
 /// Current config version.
-const CONFIG_VERSION: u32 = 1;
+const CONFIG_VERSION: u32 = 2;
 
-#[derive(serde::Deserialize, serde::Serialize, Default)]
-struct SavedConfig {
+// -- Config V1 (legacy) ------------------------------------------------
+
+#[derive(serde::Deserialize, Default)]
+struct SavedConfigV1 {
     #[serde(default)]
     version: u32,
     #[serde(default)]
     nodes: Vec<String>,
     #[serde(default)]
     display_names: std::collections::HashMap<String, String>,
-    /// Ring buffer capacity (samples at 500ms interval). Default 240 = 2 minutes.
-    /// 1200 = 10 minutes, 3600 = 30 minutes.
     #[serde(default)]
     history_capacity: Option<usize>,
 }
 
-/// Saved node info: address + optional display name.
+// -- Config V2 ----------------------------------------------------------
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+struct SavedNodeV2 {
+    addr: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    alerts: Option<crate::alerts::AlertOverrides>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+struct SavedConfigV2 {
+    version: u32,
+    #[serde(default)]
+    alerts: crate::alerts::AlertDefaults,
+    #[serde(default)]
+    nodes: Vec<SavedNodeV2>,
+}
+
+// -- Internal types -----------------------------------------------------
+
 struct SavedNode {
     addr: SocketAddr,
     display_name: Option<String>,
+    alert_overrides: Option<crate::alerts::AlertOverrides>,
 }
 
-/// Loaded config result.
 struct LoadedConfig {
     nodes: Vec<SavedNode>,
+    alert_defaults: crate::alerts::AlertDefaults,
     history_capacity: Option<usize>,
 }
 
-/// Load saved nodes from config (with migration).
-fn load_config() -> LoadedConfig {
-    let path = match config_path() {
-        Some(p) => p,
-        None => return LoadedConfig { nodes: Vec::new(), history_capacity: None },
-    };
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return LoadedConfig { nodes: Vec::new(), history_capacity: None },
-    };
-
-    let config: SavedConfig = match toml::from_str(&content) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("Failed to parse config {}: {e}", path.display());
-            return LoadedConfig { nodes: Vec::new(), history_capacity: None };
+impl Default for LoadedConfig {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            alert_defaults: crate::alerts::AlertDefaults::default(),
+            history_capacity: None,
         }
-    };
-
-    // Migration: v0 configs have no version field (defaults to 0)
-    if config.version < CONFIG_VERSION {
-        tracing::info!(
-            "Migrating config from v{} to v{}",
-            config.version,
-            CONFIG_VERSION
-        );
-    }
-
-    let nodes = config
-        .nodes
-        .iter()
-        .filter_map(|s| {
-            let addr = s.parse::<SocketAddr>().ok().or_else(|| {
-                s.parse::<std::net::IpAddr>()
-                    .ok()
-                    .map(|ip| SocketAddr::new(ip, 9867))
-            })?;
-            let display_name = config
-                .display_names
-                .get(&addr.to_string())
-                .cloned();
-            Some(SavedNode { addr, display_name })
-        })
-        .collect();
-
-    LoadedConfig {
-        nodes,
-        history_capacity: config.history_capacity,
     }
 }
 
-/// Save node addresses and display names to config file.
-fn save_config(nodes: &[(String, Option<String>)]) {
+fn parse_addr(s: &str) -> Option<SocketAddr> {
+    s.parse::<SocketAddr>().ok().or_else(|| {
+        s.parse::<std::net::IpAddr>()
+            .ok()
+            .map(|ip| SocketAddr::new(ip, 9867))
+    })
+}
+
+/// Load saved nodes from config (with v1 → v2 migration).
+fn load_config() -> LoadedConfig {
+    let path = match config_path() {
+        Some(p) => p,
+        None => return LoadedConfig::default(),
+    };
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return LoadedConfig::default(),
+    };
+
+    // Try v2 first
+    if let Ok(cfg) = toml::from_str::<SavedConfigV2>(&content) {
+        if cfg.version >= 2 {
+            let nodes = cfg
+                .nodes
+                .iter()
+                .filter_map(|n| {
+                    let addr = parse_addr(&n.addr)?;
+                    Some(SavedNode {
+                        addr,
+                        display_name: n.display_name.clone(),
+                        alert_overrides: n.alerts.clone(),
+                    })
+                })
+                .collect();
+            return LoadedConfig {
+                nodes,
+                alert_defaults: cfg.alerts,
+                history_capacity: None,
+            };
+        }
+    }
+
+    // Fall back to v1
+    if let Ok(old) = toml::from_str::<SavedConfigV1>(&content) {
+        tracing::info!("Migrating config from v{} to v{CONFIG_VERSION}", old.version);
+        let nodes: Vec<SavedNode> = old
+            .nodes
+            .iter()
+            .filter_map(|s| {
+                let addr = parse_addr(s)?;
+                let display_name = old.display_names.get(&addr.to_string()).cloned();
+                Some(SavedNode {
+                    addr,
+                    display_name,
+                    alert_overrides: None,
+                })
+            })
+            .collect();
+        let loaded = LoadedConfig {
+            nodes,
+            alert_defaults: crate::alerts::AlertDefaults::default(),
+            history_capacity: old.history_capacity,
+        };
+        // Auto-upgrade: write v2 config
+        let v2 = SavedConfigV2 {
+            version: CONFIG_VERSION,
+            alerts: loaded.alert_defaults.clone(),
+            nodes: loaded
+                .nodes
+                .iter()
+                .map(|n| SavedNodeV2 {
+                    addr: n.addr.to_string(),
+                    display_name: n.display_name.clone(),
+                    alerts: None,
+                })
+                .collect(),
+        };
+        write_config_v2(&v2);
+        return loaded;
+    }
+
+    tracing::warn!("Failed to parse config {}", path.display());
+    LoadedConfig::default()
+}
+
+/// Write a v2 config to disk.
+fn write_config_v2(cfg: &SavedConfigV2) {
     let path = match config_path() {
         Some(p) => p,
         None => return,
     };
-
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-
-    let mut config = SavedConfig {
-        version: CONFIG_VERSION,
-        nodes: nodes.iter().map(|(addr, _)| addr.clone()).collect(),
-        display_names: std::collections::HashMap::new(),
-        history_capacity: None,
-    };
-
-    for (addr, name) in nodes {
-        if let Some(name) = name {
-            config.display_names.insert(addr.clone(), name.clone());
-        }
-    }
-
-    let content = match toml::to_string_pretty(&config) {
+    let content = match toml::to_string_pretty(cfg) {
         Ok(c) => format!("# Tephra client config\n{c}"),
         Err(e) => {
             tracing::warn!("Failed to serialize config: {e}");
             return;
         }
     };
-
     if let Err(e) = std::fs::write(&path, content) {
         tracing::warn!("Failed to save config {}: {e}", path.display());
     }

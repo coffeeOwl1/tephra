@@ -13,7 +13,7 @@ use crate::view::dashboard::global_header;
 pub fn view<'a>(app: &'a App, node: &'a NodeState, tab: DetailTab) -> Element<'a, Message> {
     let nav_bar = build_nav_bar(app, node, tab);
     let metrics_strip = build_metrics_strip(node);
-    let tab_content = build_tab_content(node, tab, app.compact);
+    let tab_content = build_tab_content(app, node, tab);
 
     // Paused indicator
     let mut header_items = column![].spacing(4);
@@ -56,7 +56,7 @@ pub fn view<'a>(app: &'a App, node: &'a NodeState, tab: DetailTab) -> Element<'a
     }
 
     // Keyboard hint bar
-    let hints = text("Esc=Dashboard  1/2/3/4=Tabs  ←/→=Nodes  r=Reset  p=Pause  c=Compact  w=Workloads")
+    let hints = text("Esc=Dashboard  1-5=Tabs  ←/→=Nodes  r=Reset  p=Pause  c=Compact  w=Workloads")
         .size(10)
         .color(colors::TEPHRA);
 
@@ -161,6 +161,7 @@ fn build_detail_tabs(active: DetailTab) -> Element<'static, Message> {
         (DetailTab::Cores, "Cores"),
         (DetailTab::Events, "Events"),
         (DetailTab::History, "History"),
+        (DetailTab::Alerts, "Alerts"),
     ];
 
     let mut tab_row = row![].spacing(2);
@@ -430,12 +431,13 @@ fn build_metrics_strip(node: &NodeState) -> Element<'_, Message> {
 }
 
 /// Build the content for the active tab.
-fn build_tab_content<'a>(node: &'a NodeState, tab: DetailTab, compact: bool) -> Element<'a, Message> {
+fn build_tab_content<'a>(app: &'a App, node: &'a NodeState, tab: DetailTab) -> Element<'a, Message> {
     match tab {
-        DetailTab::Overview => build_overview(node, compact),
+        DetailTab::Overview => build_overview(node, app.compact),
         DetailTab::Cores => build_cores(node),
         DetailTab::Events => build_events(node),
         DetailTab::History => build_history(node),
+        DetailTab::Alerts => crate::view::settings::alerts_tab(node, &app.alert_defaults),
     }
 }
 

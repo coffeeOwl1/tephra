@@ -149,6 +149,10 @@ pub struct NodeState {
     workload_power_events: u32,
     /// Next workload ID.
     next_workload_id: u32,
+    /// Per-node alert overrides (None fields inherit from global defaults).
+    pub alert_overrides: crate::alerts::AlertOverrides,
+    /// Runtime alert tracking state (not persisted).
+    pub alert_state: crate::alerts::AlertState,
 }
 
 impl NodeState {
@@ -196,6 +200,8 @@ impl NodeState {
             workload_thermal_events: 0,
             workload_power_events: 0,
             next_workload_id: 1,
+            alert_overrides: Default::default(),
+            alert_state: Default::default(),
         }
     }
 

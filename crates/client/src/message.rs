@@ -48,8 +48,6 @@ pub enum Message {
     RetryConnection(NodeId),
 
     /// Set a custom display name for a node (None to clear).
-    /// Emitted from: future settings UI or external config.
-    #[allow(dead_code)]
     SetDisplayName(NodeId, Option<String>),
 
     /// Keyboard event.
@@ -70,6 +68,21 @@ pub enum Message {
 
     /// Toggle sort column in Compare summary table.
     SetSummarySort(SummaryColumn),
+
+    /// Navigate to the global settings view.
+    NavigateSettings,
+
+    /// Update global alert defaults.
+    UpdateAlertDefaults(crate::alerts::AlertDefaults),
+
+    /// Set per-node alert overrides (replaces all overrides for the node).
+    SetNodeAlertOverride(NodeId, crate::alerts::AlertOverrides),
+
+    /// Clear all alert overrides for a node (revert to global defaults).
+    ClearNodeAlertOverrides(NodeId),
+
+    /// Send a test desktop notification.
+    SendTestNotification,
 }
 
 /// Filter for the throttle event console.
@@ -137,4 +150,5 @@ pub enum DetailTab {
     Cores,
     Events,
     History,
+    Alerts,
 }

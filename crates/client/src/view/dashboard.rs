@@ -89,6 +89,30 @@ pub fn global_header(app: &App, show_compare: bool) -> Element<'_, Message> {
         header = header.push(Space::new().width(8));
     }
 
+    let settings_btn = button(
+        text("\u{2699}").size(16).color(colors::TEPHRA),
+    )
+    .on_press(Message::NavigateSettings)
+    .padding([6, 12])
+    .style(|_theme: &iced::Theme, status| {
+        let border_color = match status {
+            button::Status::Hovered => colors::TEPHRA,
+            _ => colors::SCORIA,
+        };
+        button::Style {
+            background: None,
+            border: iced::Border {
+                color: border_color,
+                width: 1.0,
+                radius: 6.0.into(),
+            },
+            text_color: colors::TEPHRA,
+            ..Default::default()
+        }
+    });
+    header = header.push(settings_btn);
+    header = header.push(Space::new().width(8));
+
     header.push(add_btn).into()
 }
 
