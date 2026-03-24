@@ -11,10 +11,39 @@ use crate::view::dashboard::global_header;
 // ── Global Settings View ────────────────────────────────────────────────
 
 pub fn view(app: &App) -> Element<'_, Message> {
-    let header = global_header(app, false);
+    let header = global_header(app, true);
 
     let title = text("Settings").size(20).color(colors::PUMICE);
     let subtitle = text("Esc = Dashboard").size(10).color(colors::TEPHRA);
+
+    // ── Nodes section ──
+    let nodes_title = text("Nodes")
+        .size(15)
+        .color(colors::EMBER);
+
+    let add_btn = button(
+        text("+ Add Node")
+            .size(13)
+            .color(colors::EMBER),
+    )
+    .on_press(Message::OpenAddDialog)
+    .padding([6, 16])
+    .style(|_theme: &iced::Theme, status| {
+        let border_color = match status {
+            button::Status::Hovered => colors::EMBER,
+            _ => colors::SCORIA,
+        };
+        button::Style {
+            background: None,
+            border: iced::Border {
+                color: border_color,
+                width: 1.0,
+                radius: 6.0.into(),
+            },
+            text_color: colors::EMBER,
+            ..Default::default()
+        }
+    });
 
     // ── Alert Defaults section ──
     let section_title = text("Alert Defaults")
@@ -147,6 +176,9 @@ pub fn view(app: &App) -> Element<'_, Message> {
         title,
         subtitle,
         Space::new().height(20),
+        nodes_title,
+        add_btn,
+        Space::new().height(16),
         section_title,
         section_desc,
         Space::new().height(12),
@@ -165,11 +197,11 @@ pub fn view(app: &App) -> Element<'_, Message> {
         test_btn,
     ]
     .spacing(8)
-    .padding(24)
     .max_width(600);
 
     scrollable(
-        column![header, content]
+        column![header, Space::new().height(16), content]
+            .padding(24)
             .width(Length::Fill),
     )
     .into()

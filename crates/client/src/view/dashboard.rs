@@ -29,30 +29,6 @@ pub fn global_header(app: &App, show_compare: bool) -> Element<'_, Message> {
     .size(13)
     .color(colors::TEPHRA);
 
-    let add_btn = button(
-        text("+ Add Node")
-            .size(13)
-            .color(colors::EMBER),
-    )
-    .on_press(Message::OpenAddDialog)
-    .padding([6, 16])
-    .style(|_theme: &iced::Theme, status| {
-        let border_color = match status {
-            button::Status::Hovered => colors::EMBER,
-            _ => colors::SCORIA,
-        };
-        button::Style {
-            background: None,
-            border: iced::Border {
-                color: border_color,
-                width: 1.0,
-                radius: 6.0.into(),
-            },
-            text_color: colors::EMBER,
-            ..Default::default()
-        }
-    });
-
     let mut header = row![
         title,
         Space::new().width(12),
@@ -113,7 +89,36 @@ pub fn global_header(app: &App, show_compare: bool) -> Element<'_, Message> {
     header = header.push(settings_btn);
     header = header.push(Space::new().width(8));
 
-    header.push(add_btn).into()
+    let on_dashboard = matches!(app.current_view, crate::app::View::Dashboard);
+    if on_dashboard {
+        // Invisible placeholder so buttons don't shift
+        header = header.push(Space::new().width(36));
+    } else {
+        let close_btn = button(
+            text("\u{2715}").size(14).color(colors::TEPHRA),
+        )
+        .on_press(Message::NavigateDashboard)
+        .padding([6, 12])
+        .style(|_theme: &iced::Theme, status| {
+            let border_color = match status {
+                button::Status::Hovered => colors::TEPHRA,
+                _ => colors::SCORIA,
+            };
+            button::Style {
+                background: None,
+                border: iced::Border {
+                    color: border_color,
+                    width: 1.0,
+                    radius: 6.0.into(),
+                },
+                text_color: colors::TEPHRA,
+                ..Default::default()
+            }
+        });
+        header = header.push(close_btn);
+    }
+
+    header.into()
 }
 
 /// The dashboard view: header + grid of node cards.
@@ -143,7 +148,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
                         .size(18)
                         .color(colors::TEPHRA),
                     Space::new().height(8),
-                    text("Click \"+ Add Node\" to connect to a tephra-server")
+                    text("Open Settings (\u{2699}) to add a node")
                         .size(13)
                         .color(colors::TEPHRA),
                 ]
