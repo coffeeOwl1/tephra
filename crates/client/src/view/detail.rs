@@ -959,6 +959,7 @@ fn build_history<'a>(node: &'a NodeState) -> Element<'a, Message> {
         col = col.push(stat_row("Governor", info.governor.clone(), colors::PUMICE));
         col = col.push(stat_row("RAM", format!("{:.1} GB", info.ram_gb), colors::PUMICE));
         col = col.push(stat_row("Agent version", info.agent_version.clone(), colors::PUMICE));
+        col = col.push(stat_row("Address", node.addr.to_string(), colors::PUMICE));
     }
 
     container(col.padding(12))

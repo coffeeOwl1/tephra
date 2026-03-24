@@ -17,10 +17,14 @@ pub fn node_card(node: &NodeState) -> Element<'_, Message> {
         .size(14)
         .color(colors::PUMICE);
 
+    let addr = text(node.addr.to_string())
+        .size(10)
+        .color(colors::TEPHRA);
+
     let status = status_badge_with_retry(&node.status, node.id);
 
     let unread = node.unread_event_count();
-    let mut header = row![hostname].spacing(6).align_y(iced::Alignment::Center);
+    let mut header = row![column![hostname, addr].spacing(2)].spacing(6).align_y(iced::Alignment::Center);
     if unread > 0 {
         header = header.push(
             container(
