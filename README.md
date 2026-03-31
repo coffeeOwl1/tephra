@@ -1,13 +1,13 @@
 # Tephra
 
-GPU-accelerated multi-node CPU thermal monitoring for Linux. Tephra consists of a lightweight server agent that reads hardware sensors on each machine, and a desktop client that visualizes real-time telemetry across your fleet.
+GPU-accelerated multi-node CPU thermal monitoring for Linux and Windows. Tephra consists of a lightweight server agent that reads hardware sensors on each machine, and a desktop client that visualizes real-time telemetry across your fleet.
 
 ![Rust](https://img.shields.io/badge/rust-stable-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ## Overview
 
-**tephra-server** is a monitoring agent that runs on each Linux machine. It reads CPU temperature, power, frequency, utilization, and fan speed from standard kernel interfaces and exposes them over HTTP with Server-Sent Events for live streaming.
+**tephra-server** is a monitoring agent that runs on each machine. On Linux it reads sensors from standard kernel interfaces (`/proc`, `/sys`, hwmon, RAPL). On Windows it uses LibreHardwareMonitor's HTTP API for temperature, power, and fan data, plus native NT APIs for CPU utilization and frequency. Both platforms expose the same HTTP + SSE API.
 
 **tephra-client** is an iced/wgpu desktop application that connects to one or more tephra servers and displays real-time dashboards with charts, heatmaps, throttle detection, workload tracking, and multi-node comparison.
 
@@ -58,7 +58,7 @@ The interactive `install.sh` handles everything:
 | Throttling | Heuristic: thermal (>85°C) vs power based on core freq ratios |
 | Workloads | Auto-detected sustained CPU activity with per-workload stats |
 
-Supports **x86_64** and **aarch64** (ARM64).
+Supports **x86_64** and **aarch64** (ARM64) on Linux, **x86_64** on Windows.
 
 ### Running the Server
 
@@ -91,6 +91,52 @@ curl http://localhost:9867/health # verify
 docker build -t tephra .
 docker run -d --privileged -v /sys:/sys:ro -v /proc:/proc:ro -p 9867:9867 tephra
 ```
+
+### Windows
+
+The server runs on Windows with the same API as the Linux version. It uses [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) for hardware sensor access and native Win32/NT APIs for CPU utilization and frequency.
+
+#### Prerequisites
+
+1. **Rust** — install via [rustup](https://rustup.rs/)
+2. **LibreHardwareMonitor** — install via `winget install LibreHardwareMonitor.LibreHardwareMonitor`, then copy the install folder to a user-writable location (e.g. `C:\Users\<you>\LibreHardwareMonitor\`) so settings persist
+
+#### Setup
+
+1. **Build the server:**
+   ```
+   cargo build --release -p tephra-server
+   ```
+
+2. **Start LibreHardwareMonitor** as administrator. In its Options menu, enable **HTTP Server**. This exposes sensor data at `http://localhost:8085/data.json` which tephra reads.
+
+3. **Run tephra:**
+   ```
+   .\target\release\tephra.exe
+   ```
+
+#### What each component provides
+
+| Source | Sensors |
+|--------|---------|
+| LHM HTTP | CPU package temperature, per-core temps, package power, fan RPM, per-physical-core clocks |
+| `NtQuerySystemInformation` | Per-logical-core CPU utilization |
+| `CallNtPowerInformation` | Per-logical-core frequency (fallback when LHM clock count doesn't match logical cores, e.g. Intel hybrid P+E with HT) |
+| Registry / `GlobalMemoryStatusEx` | CPU model, max frequency, total RAM |
+| Native ACPI thermal zones | Temperature fallback when LHM is unavailable (less accurate) |
+
+#### Auto-start on boot
+
+- **Tephra**: create a scheduled task — `schtasks /Create /TN TephraServer /TR "C:\path\to\tephra.exe" /SC ONSTART /RL HIGHEST /RU SYSTEM`
+- **LibreHardwareMonitor**: enable "Run On Windows Startup" in its Options menu, or create a scheduled task that runs on logon
+
+#### Notes
+
+- LHM must be running with its GUI active (even minimized to tray) for sensors to update. Headless/service-mode launches result in stale data.
+- Without LHM, tephra still reports CPU utilization, frequency (base clock), and temperature from ACPI thermal zones. Power, fan, and boost clocks require LHM.
+- The LHM HTTP server listens on port 8085 by default. Tephra connects to `localhost:8085` — no configuration needed.
+- Tephra auto-detects LHM availability on startup and retries every ~30 seconds if LHM starts later.
+- Windows Firewall: when tephra.exe first starts, allow it through the firewall so the client can connect over the network.
 
 ### API
 

@@ -85,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 async fn shutdown_signal() {
     let ctrl_c = tokio::signal::ctrl_c();
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -94,4 +95,12 @@ async fn shutdown_signal() {
         _ = ctrl_c => { info!("Received SIGINT"); }
         _ = sigterm.recv() => { info!("Received SIGTERM"); }
     }
+}
+
+#[cfg(windows)]
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to install Ctrl+C handler");
+    info!("Received Ctrl+C");
 }
