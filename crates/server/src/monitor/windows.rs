@@ -70,7 +70,22 @@ fn find_lhm_exe_path() -> Option<String> {
 /// Create or update a scheduled task that can relaunch LHM in the user's
 /// interactive session. This is needed because tephra runs as SYSTEM in
 /// Session 0 and can't directly start GUI apps in the user's desktop.
+///
+/// The task must run as the logged-in user (not SYSTEM) with /IT so it
+/// lands in the console session where LHM can access hardware sensors.
 fn setup_lhm_restart_task(lhm_path: &str) {
+    // Find the logged-in console user via `query user`
+    let username = match find_console_user() {
+        Some(u) => u,
+        None => {
+            warn!("No console user found, LHM auto-restart unavailable");
+            return;
+        }
+    };
+
+    // /ru <user> with /rl highest and /it requires /rp "" (empty password)
+    // to indicate "use the logged-on user's credentials" for an interactive task.
+    // This works for tasks that only run when the user is logged in.
     let result = std::process::Command::new("schtasks")
         .args([
             "/create",
@@ -80,16 +95,19 @@ fn setup_lhm_restart_task(lhm_path: &str) {
             lhm_path,
             "/sc",
             "onlogon",
+            "/ru",
+            &username,
             "/rl",
             "highest",
             "/it",
             "/f",
         ])
+        .stdin(std::process::Stdio::null())
         .output();
 
     match result {
         Ok(output) if output.status.success() => {
-            tracing::debug!("Created/updated _tephra_lhm scheduled task");
+            tracing::info!("Created _tephra_lhm scheduled task (user: {username})");
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -99,6 +117,26 @@ fn setup_lhm_restart_task(lhm_path: &str) {
             warn!("Failed to run schtasks: {e}");
         }
     }
+}
+
+/// Find the username of the console session user via `query user`.
+fn find_console_user() -> Option<String> {
+    let output = std::process::Command::new("query")
+        .arg("user")
+        .output()
+        .ok()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines().skip(1) {
+        // Format: " USERNAME  SESSIONNAME  ID  STATE  IDLE TIME  LOGON TIME"
+        // The username may or may not have a leading ">" for the current session
+        let line = line.trim_start_matches('>').trim();
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 3 && parts[1].eq_ignore_ascii_case("console") {
+            return Some(parts[0].to_string());
+        }
+    }
+    None
 }
 
 /// Kill a stale LHM process and relaunch it via the scheduled task.
