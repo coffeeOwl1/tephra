@@ -348,17 +348,17 @@ fn http_get_json_with_hash<T: serde::de::DeserializeOwned>(url: &str) -> Option<
 }
 
 fn http_get_body(url: &str) -> Option<String> {
+    use std::net::ToSocketAddrs;
+
     let url = url.strip_prefix("http://")?;
     let (host_port, path) = url.split_once('/').unwrap_or((url, ""));
     let path = format!("/{path}");
 
-    let stream = std::net::TcpStream::connect(host_port).ok()?;
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_millis(500)))
-        .ok()?;
-    stream
-        .set_write_timeout(Some(std::time::Duration::from_millis(500)))
-        .ok()?;
+    let timeout = std::time::Duration::from_millis(500);
+    let addr = host_port.to_socket_addrs().ok()?.next()?;
+    let stream = std::net::TcpStream::connect_timeout(&addr, timeout).ok()?;
+    stream.set_read_timeout(Some(timeout)).ok()?;
+    stream.set_write_timeout(Some(timeout)).ok()?;
 
     use std::io::Write;
     let mut stream = stream;
@@ -743,9 +743,6 @@ impl SystemState {
         }
     }
 
-    fn sample_top_processes(&mut self) {
-        // Not implemented on Windows — would need WMI or toolhelp32 snapshot.
-    }
 }
 
 // ── Wall clock ───────────────────────────────────────────────────────────────
