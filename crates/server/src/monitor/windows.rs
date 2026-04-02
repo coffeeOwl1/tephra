@@ -454,7 +454,8 @@ impl SystemState {
                         );
                         self.lhm_available = false;
                         self.native_thermal_available = true;
-                        self.lhm_prev_hash = 0;
+                        // Keep lhm_prev_hash so retry logic can verify data has
+                        // actually changed before re-enabling LHM.
                         self.lhm_same_hash_ticks = 0;
                         return;
                     }
@@ -499,19 +500,26 @@ impl SystemState {
             self.sample_frequencies_nt();
         }
 
-        // Periodically retry LHM if not available (every ~30s at 500ms interval)
+        // Periodically retry LHM if not available (every ~30s at 500ms interval).
+        // When retrying after a staleness detection, verify the data has actually
+        // changed before re-enabling — otherwise we'd cycle endlessly between
+        // "stale → fallback → retry → re-enable → stale".
         if !self.lhm_available {
             static RETRY_COUNTER: std::sync::atomic::AtomicU32 =
                 std::sync::atomic::AtomicU32::new(0);
             let count = RETRY_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if count % 60 == 0 {
-                if check_lhm_http() {
-                    self.lhm_available = true;
-                    self.lhm_prev_hash = 0;
-                    self.lhm_same_hash_ticks = 0;
-                    tracing::info!(
-                        "LibreHardwareMonitor HTTP server detected, switching to full sensor data"
-                    );
+                if let Some(data) = query_lhm_http() {
+                    // Only re-enable if the response has changed since we last
+                    // declared it stale (lhm_prev_hash holds the last stale hash).
+                    if self.lhm_prev_hash == 0 || data.response_hash != self.lhm_prev_hash {
+                        self.lhm_available = true;
+                        self.lhm_prev_hash = 0;
+                        self.lhm_same_hash_ticks = 0;
+                        tracing::info!(
+                            "LibreHardwareMonitor HTTP server detected, switching to full sensor data"
+                        );
+                    }
                 }
             }
         }
