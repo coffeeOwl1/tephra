@@ -71,20 +71,21 @@ struct LhmData {
     fan_rpm: Option<u32>,
     ppt_watts: Option<f64>,
     per_core_freq: Vec<u32>,
-    /// CPU total load as reported by LHM (0–100), used to cross-validate against
-    /// NT-derived utilization for staleness detection.
-    cpu_total_load: Option<f64>,
+    /// Hash of the raw JSON response body, used for staleness detection.
+    /// If LHM's sensor polling has stopped, the HTTP endpoint returns
+    /// byte-identical JSON on every request.
+    response_hash: u64,
 }
 
 fn query_lhm_http() -> Option<LhmData> {
-    let root: LhmNode = http_get_json(LHM_URL)?;
+    let (root, response_hash): (LhmNode, u64) = http_get_json_with_hash(LHM_URL)?;
 
     let mut data = LhmData {
         temp_c: None,
         fan_rpm: None,
         ppt_watts: None,
         per_core_freq: Vec::new(),
-        cpu_total_load: None,
+        response_hash,
     };
 
     // Walk the tree collecting sensors
@@ -142,15 +143,6 @@ fn query_lhm_http() -> Option<LhmData> {
                         }
                     }
                 }
-                "Load" => {
-                    if is_cpu && data.cpu_total_load.is_none() {
-                        let name_lower = node.text.to_lowercase();
-                        if name_lower.contains("total") {
-                            let v = parse_value(val_str);
-                            data.cpu_total_load = Some(v);
-                        }
-                    }
-                }
                 _ => {}
             }
         }
@@ -197,8 +189,26 @@ fn query_lhm_http() -> Option<LhmData> {
 
 // ── Simple blocking HTTP GET ─────────────────────────────────────────────────
 
-fn http_get_json<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
-    // Parse host:port and path from URL
+/// FNV-1a hash for fast, non-cryptographic hashing of the response body.
+fn fnv1a_hash(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+/// Like `http_get_json` but also returns a hash of the raw response body,
+/// used to detect when LHM serves identical (stale) data across requests.
+fn http_get_json_with_hash<T: serde::de::DeserializeOwned>(url: &str) -> Option<(T, u64)> {
+    let body = http_get_body(url)?;
+    let hash = fnv1a_hash(body.as_bytes());
+    let parsed: T = serde_json::from_str(&body).ok()?;
+    Some((parsed, hash))
+}
+
+fn http_get_body(url: &str) -> Option<String> {
     let url = url.strip_prefix("http://")?;
     let (host_port, path) = url.split_once('/').unwrap_or((url, ""));
     let path = format!("/{path}");
@@ -222,11 +232,14 @@ fn http_get_json<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
     let mut response = Vec::new();
     stream.read_to_end(&mut response).ok()?;
 
-    // Skip HTTP headers — find the blank line
     let response_str = String::from_utf8_lossy(&response);
     let body = response_str.split_once("\r\n\r\n")?.1;
+    Some(body.to_string())
+}
 
-    serde_json::from_str(body).ok()
+fn http_get_json<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
+    let body = http_get_body(url)?;
+    serde_json::from_str(&body).ok()
 }
 
 // ── Native ACPI thermal fallback ─────────────────────────────────────────────
@@ -416,13 +429,10 @@ fn read_registry_string(subkey: &str, value_name: &str) -> Option<String> {
 // ── Sensor sampling ──────────────────────────────────────────────────────────
 
 impl SystemState {
-    /// Number of consecutive divergent ticks before LHM is declared stale.
-    /// 20 ticks × 500ms = 10 seconds of sustained disagreement.
+    /// Number of consecutive identical LHM responses before declaring stale.
+    /// 20 ticks × 500ms = 10 seconds. A live system with dozens of sensors
+    /// reporting decimal values cannot produce byte-identical JSON this long.
     const LHM_STALE_THRESHOLD: u32 = 20;
-
-    /// Maximum allowed absolute difference (percentage points) between LHM's
-    /// reported CPU total load and our NT-derived average utilization.
-    const LHM_LOAD_DIVERGENCE: f64 = 15.0;
 
     pub(super) fn sample_sensors(&mut self) {
         // CPU utilization via NT kernel (fast, no WMI needed)
@@ -431,30 +441,27 @@ impl SystemState {
         // All other sensors via LibreHardwareMonitor HTTP
         if self.lhm_available {
             if let Some(data) = query_lhm_http() {
-                // Cross-validate: compare LHM's CPU total load against our
-                // NT-derived utilization. If they diverge for too long, LHM's
-                // sensor polling has stalled and all its data is stale.
-                if let Some(lhm_load) = data.cpu_total_load {
-                    let nt_avg = self.avg_util();
-                    let delta = (lhm_load - nt_avg).abs();
-                    if delta > Self::LHM_LOAD_DIVERGENCE {
-                        self.lhm_stale_ticks += 1;
-                        if self.lhm_stale_ticks == Self::LHM_STALE_THRESHOLD {
-                            warn!(
-                                lhm_load = format!("{lhm_load:.1}"),
-                                nt_load = format!("{nt_avg:.1}"),
-                                "LibreHardwareMonitor sensors appear stale \
-                                 (CPU load diverged for {:.0}s), falling back to native sensors",
-                                Self::LHM_STALE_THRESHOLD as f64 * 0.5
-                            );
-                            self.lhm_available = false;
-                            self.native_thermal_available = true;
-                            return;
-                        }
-                    } else {
-                        self.lhm_stale_ticks = 0;
+                // Staleness detection: if the raw JSON response is byte-identical
+                // across many consecutive requests, LHM's sensor polling has
+                // stopped and all values are frozen.
+                if self.lhm_prev_hash != 0 && data.response_hash == self.lhm_prev_hash {
+                    self.lhm_same_hash_ticks += 1;
+                    if self.lhm_same_hash_ticks == Self::LHM_STALE_THRESHOLD {
+                        warn!(
+                            "LibreHardwareMonitor sensors appear stale \
+                             (identical response for {:.0}s), falling back to native sensors",
+                            Self::LHM_STALE_THRESHOLD as f64 * 0.5
+                        );
+                        self.lhm_available = false;
+                        self.native_thermal_available = true;
+                        self.lhm_prev_hash = 0;
+                        self.lhm_same_hash_ticks = 0;
+                        return;
                     }
+                } else {
+                    self.lhm_same_hash_ticks = 0;
                 }
+                self.lhm_prev_hash = data.response_hash;
 
                 if let Some(temp) = data.temp_c {
                     self.temp_c = temp;
@@ -481,7 +488,8 @@ impl SystemState {
                 // LHM HTTP failed — may have been closed
                 self.lhm_available = false;
                 self.native_thermal_available = true;
-                self.lhm_stale_ticks = 0;
+                self.lhm_prev_hash = 0;
+                self.lhm_same_hash_ticks = 0;
                 warn!("LibreHardwareMonitor HTTP server lost, falling back to native sensors");
             }
         } else if self.native_thermal_available {
@@ -499,7 +507,8 @@ impl SystemState {
             if count % 60 == 0 {
                 if check_lhm_http() {
                     self.lhm_available = true;
-                    self.lhm_stale_ticks = 0;
+                    self.lhm_prev_hash = 0;
+                    self.lhm_same_hash_ticks = 0;
                     tracing::info!(
                         "LibreHardwareMonitor HTTP server detected, switching to full sensor data"
                     );
