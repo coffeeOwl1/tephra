@@ -371,6 +371,10 @@ pub struct SystemState {
     pub(super) native_thermal_available: bool,
     #[cfg(target_os = "windows")]
     pub(super) fan_detected: bool,
+    /// Consecutive ticks where LHM CPU load diverges from NT-derived utilization.
+    /// When this exceeds the threshold, LHM is considered stale.
+    #[cfg(target_os = "windows")]
+    pub(super) lhm_stale_ticks: u32,
 }
 
 impl SystemState {
@@ -434,6 +438,8 @@ impl SystemState {
             native_thermal_available: pf.native_thermal_available,
             #[cfg(target_os = "windows")]
             fan_detected: false,
+            #[cfg(target_os = "windows")]
+            lhm_stale_ticks: 0,
         }
     }
 
@@ -777,6 +783,8 @@ mod tests {
             native_thermal_available: false,
             #[cfg(target_os = "windows")]
             fan_detected: false,
+            #[cfg(target_os = "windows")]
+            lhm_stale_ticks: 0,
         }
     }
 

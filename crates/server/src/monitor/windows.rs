@@ -71,6 +71,9 @@ struct LhmData {
     fan_rpm: Option<u32>,
     ppt_watts: Option<f64>,
     per_core_freq: Vec<u32>,
+    /// CPU total load as reported by LHM (0–100), used to cross-validate against
+    /// NT-derived utilization for staleness detection.
+    cpu_total_load: Option<f64>,
 }
 
 fn query_lhm_http() -> Option<LhmData> {
@@ -81,6 +84,7 @@ fn query_lhm_http() -> Option<LhmData> {
         fan_rpm: None,
         ppt_watts: None,
         per_core_freq: Vec::new(),
+        cpu_total_load: None,
     };
 
     // Walk the tree collecting sensors
@@ -135,6 +139,15 @@ fn query_lhm_http() -> Option<LhmData> {
                             if v > 0.0 {
                                 data.per_core_freq.push(v.round() as u32);
                             }
+                        }
+                    }
+                }
+                "Load" => {
+                    if is_cpu && data.cpu_total_load.is_none() {
+                        let name_lower = node.text.to_lowercase();
+                        if name_lower.contains("total") {
+                            let v = parse_value(val_str);
+                            data.cpu_total_load = Some(v);
                         }
                     }
                 }
@@ -403,6 +416,14 @@ fn read_registry_string(subkey: &str, value_name: &str) -> Option<String> {
 // ── Sensor sampling ──────────────────────────────────────────────────────────
 
 impl SystemState {
+    /// Number of consecutive divergent ticks before LHM is declared stale.
+    /// 20 ticks × 500ms = 10 seconds of sustained disagreement.
+    const LHM_STALE_THRESHOLD: u32 = 20;
+
+    /// Maximum allowed absolute difference (percentage points) between LHM's
+    /// reported CPU total load and our NT-derived average utilization.
+    const LHM_LOAD_DIVERGENCE: f64 = 15.0;
+
     pub(super) fn sample_sensors(&mut self) {
         // CPU utilization via NT kernel (fast, no WMI needed)
         self.sample_utilization_nt();
@@ -410,6 +431,31 @@ impl SystemState {
         // All other sensors via LibreHardwareMonitor HTTP
         if self.lhm_available {
             if let Some(data) = query_lhm_http() {
+                // Cross-validate: compare LHM's CPU total load against our
+                // NT-derived utilization. If they diverge for too long, LHM's
+                // sensor polling has stalled and all its data is stale.
+                if let Some(lhm_load) = data.cpu_total_load {
+                    let nt_avg = self.avg_util();
+                    let delta = (lhm_load - nt_avg).abs();
+                    if delta > Self::LHM_LOAD_DIVERGENCE {
+                        self.lhm_stale_ticks += 1;
+                        if self.lhm_stale_ticks == Self::LHM_STALE_THRESHOLD {
+                            warn!(
+                                lhm_load = format!("{lhm_load:.1}"),
+                                nt_load = format!("{nt_avg:.1}"),
+                                "LibreHardwareMonitor sensors appear stale \
+                                 (CPU load diverged for {:.0}s), falling back to native sensors",
+                                Self::LHM_STALE_THRESHOLD as f64 * 0.5
+                            );
+                            self.lhm_available = false;
+                            self.native_thermal_available = true;
+                            return;
+                        }
+                    } else {
+                        self.lhm_stale_ticks = 0;
+                    }
+                }
+
                 if let Some(temp) = data.temp_c {
                     self.temp_c = temp;
                 }
@@ -435,6 +481,7 @@ impl SystemState {
                 // LHM HTTP failed — may have been closed
                 self.lhm_available = false;
                 self.native_thermal_available = true;
+                self.lhm_stale_ticks = 0;
                 warn!("LibreHardwareMonitor HTTP server lost, falling back to native sensors");
             }
         } else if self.native_thermal_available {
@@ -452,6 +499,7 @@ impl SystemState {
             if count % 60 == 0 {
                 if check_lhm_http() {
                     self.lhm_available = true;
+                    self.lhm_stale_ticks = 0;
                     tracing::info!(
                         "LibreHardwareMonitor HTTP server detected, switching to full sensor data"
                     );
