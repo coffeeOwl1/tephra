@@ -59,6 +59,16 @@ pub struct CoreInfo {
     pub(super) prev_total: u64,
 }
 
+/// Top-N process info (computed each sample).
+pub struct TopProcess {
+    pub pid: u32,
+    pub name: String,
+    pub cpu_pct: f64,
+}
+
+/// Maximum number of top processes to track.
+const TOP_PROCESS_COUNT: usize = 5;
+
 impl CoreInfo {
     pub fn new() -> Self {
         Self {
@@ -352,6 +362,13 @@ pub struct SystemState {
     workload_counter: u32,
     pub(crate) n_cores: usize,
 
+    /// Top processes by CPU usage (updated each sample).
+    pub top_processes: Vec<TopProcess>,
+    /// Previous per-process CPU ticks (pid → utime+stime) for delta computation.
+    pub(super) prev_proc_ticks: std::collections::HashMap<u32, u64>,
+    /// Previous aggregate system CPU total ticks (from /proc/stat "cpu " line).
+    pub(super) prev_sys_total: u64,
+
     // Linux-specific sensor state
     #[cfg(target_os = "linux")]
     pub(super) hwmon_path: Option<std::path::PathBuf>,
@@ -426,6 +443,10 @@ impl SystemState {
             completed_workloads: Vec::new(),
             workload_counter: 0,
             n_cores,
+
+            top_processes: Vec::new(),
+            prev_proc_ticks: std::collections::HashMap::new(),
+            prev_sys_total: 0,
 
             #[cfg(target_os = "linux")]
             hwmon_path: pf.hwmon_path,
@@ -775,6 +796,10 @@ mod tests {
             completed_workloads: Vec::new(),
             workload_counter: 0,
             n_cores,
+
+            top_processes: Vec::new(),
+            prev_proc_ticks: std::collections::HashMap::new(),
+            prev_sys_total: 0,
 
             #[cfg(target_os = "linux")]
             hwmon_path: None,

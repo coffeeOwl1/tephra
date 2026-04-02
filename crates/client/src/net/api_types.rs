@@ -21,6 +21,13 @@ pub struct CoreSnapshot {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct ProcessSnapshot {
+    pub pid: u32,
+    pub name: String,
+    pub cpu_pct: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Snapshot {
     pub timestamp_ms: u64,
     pub temp_c: i32,
@@ -41,6 +48,8 @@ pub struct Snapshot {
     pub energy_wh: f64,
     pub uptime_secs: f64,
     pub cores: Vec<CoreSnapshot>,
+    #[serde(default)]
+    pub top_processes: Vec<ProcessSnapshot>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -30,6 +30,7 @@ impl SystemState {
         self.sample_temperature();
         self.sample_ppt();
         self.sample_fan();
+        self.sample_top_processes();
     }
 
     pub(crate) fn has_fan_sensor(&self) -> bool {
@@ -145,6 +146,102 @@ impl SystemState {
                 self.fan_rpm = rpm as u32;
             }
         }
+    }
+
+    fn sample_top_processes(&mut self) {
+        use std::collections::HashMap;
+        use super::TOP_PROCESS_COUNT;
+
+        // Read aggregate CPU total from /proc/stat "cpu " line
+        let stat_content = match fs::read_to_string("/proc/stat") {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let sys_total: u64 = stat_content
+            .lines()
+            .find(|l| l.starts_with("cpu "))
+            .and_then(|line| {
+                let vals: u64 = line.split_whitespace().skip(1).take(7)
+                    .filter_map(|s| s.parse::<u64>().ok())
+                    .sum();
+                Some(vals)
+            })
+            .unwrap_or(0);
+
+        let d_sys = sys_total.saturating_sub(self.prev_sys_total);
+
+        // Scan /proc for process CPU ticks
+        let mut current_ticks: HashMap<u32, (String, u64)> = HashMap::new();
+        let proc_dir = match fs::read_dir("/proc") {
+            Ok(d) => d,
+            Err(_) => {
+                self.prev_sys_total = sys_total;
+                return;
+            }
+        };
+
+        for entry in proc_dir.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            let pid: u32 = match name_str.parse() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+
+            let stat_path = format!("/proc/{pid}/stat");
+            let content = match fs::read_to_string(&stat_path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            // Parse /proc/[pid]/stat — comm field is in parens and may contain spaces
+            let comm_start = match content.find('(') {
+                Some(i) => i,
+                None => continue,
+            };
+            let comm_end = match content.rfind(')') {
+                Some(i) => i,
+                None => continue,
+            };
+            let comm = content[comm_start + 1..comm_end].to_string();
+            let rest = &content[comm_end + 2..]; // skip ") "
+            let fields: Vec<&str> = rest.split_whitespace().collect();
+            // fields[0] = state, fields[11] = utime (index 13 in full stat), fields[12] = stime (14)
+            if fields.len() < 13 {
+                continue;
+            }
+            let utime: u64 = fields[11].parse().unwrap_or(0);
+            let stime: u64 = fields[12].parse().unwrap_or(0);
+            current_ticks.insert(pid, (comm, utime + stime));
+        }
+
+        // Compute per-process CPU% from deltas (skip first sample)
+        if self.prev_sys_total > 0 && d_sys > 0 {
+            let mut procs: Vec<super::TopProcess> = current_ticks
+                .iter()
+                .filter_map(|(&pid, (name, ticks))| {
+                    let prev = self.prev_proc_ticks.get(&pid)?;
+                    let d_proc = ticks.saturating_sub(*prev);
+                    if d_proc == 0 {
+                        return None;
+                    }
+                    let cpu_pct = 100.0 * d_proc as f64 / d_sys as f64;
+                    Some(super::TopProcess {
+                        pid,
+                        name: name.clone(),
+                        cpu_pct,
+                    })
+                })
+                .collect();
+
+            procs.sort_by(|a, b| b.cpu_pct.partial_cmp(&a.cpu_pct).unwrap_or(std::cmp::Ordering::Equal));
+            procs.truncate(TOP_PROCESS_COUNT);
+            self.top_processes = procs;
+        }
+
+        // Store current ticks for next delta
+        self.prev_sys_total = sys_total;
+        self.prev_proc_ticks = current_ticks.into_iter().map(|(pid, (_, ticks))| (pid, ticks)).collect();
     }
 }
 

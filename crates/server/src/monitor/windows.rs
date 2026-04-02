@@ -742,6 +742,10 @@ impl SystemState {
             self.cores[i].freq_mhz = info.current_mhz;
         }
     }
+
+    fn sample_top_processes(&mut self) {
+        // Not implemented on Windows — would need WMI or toolhelp32 snapshot.
+    }
 }
 
 // ── Wall clock ───────────────────────────────────────────────────────────────

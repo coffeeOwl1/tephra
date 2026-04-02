@@ -512,50 +512,127 @@ fn build_overview<'a>(node: &'a NodeState, compact: bool) -> Element<'a, Message
 
     chart_col = chart_col.push(top_row).push(bot_row);
 
-    // Fan chart (only if fan detected and not compact)
-    let fan_detected = node.snapshot.as_ref().is_some_and(|s| s.fan_detected);
-    if fan_detected && !compact {
-        // Check for fan stopped warning
-        let fan_rpm = node.snapshot.as_ref().map(|s| s.fan_rpm).unwrap_or(0);
-        let had_fan_running = node.history.fan_rpm.iter().any(|&v| v > 0.0);
-        let fan_stopped = fan_rpm == 0 && had_fan_running;
+    // Bottom row: fan chart (if detected) + top processes, side by side when not compact
+    if !compact {
+        let fan_detected = node.snapshot.as_ref().is_some_and(|s| s.fan_detected);
+        let has_processes = node.snapshot.as_ref().is_some_and(|s| !s.top_processes.is_empty());
 
-        let fan_label = if fan_stopped {
-            "Fan RPM  !! FAN STOPPED"
+        let fan_tile = if fan_detected {
+            let fan_rpm = node.snapshot.as_ref().map(|s| s.fan_rpm).unwrap_or(0);
+            let had_fan_running = node.history.fan_rpm.iter().any(|&v| v > 0.0);
+            let fan_stopped = fan_rpm == 0 && had_fan_running;
+
+            let fan_label = if fan_stopped {
+                "Fan RPM  !! FAN STOPPED"
+            } else {
+                "Fan RPM"
+            };
+            let fan_color = if fan_stopped {
+                colors::MAGMA
+            } else if fan_rpm < 500 {
+                colors::LAVA
+            } else {
+                colors::GEOTHERMAL
+            };
+
+            Some(
+                container(
+                    line_chart(
+                        &node.history.fan_rpm,
+                        &LineChartConfig {
+                            color: fan_color,
+                            label: fan_label,
+                            unit: "RPM",
+                            peak: node.snapshot.as_ref().map(|s| s.peak_fan as f64),
+                            threshold: None,
+                            y_min: Some(0.0),
+                            y_max: None,
+                        },
+                        &node.caches.fan,
+                    ),
+                )
+                .width(Length::Fill)
+                .padding(4)
+                .style(chart_style),
+            )
         } else {
-            "Fan RPM"
+            None
         };
-        let fan_color = if fan_stopped {
-            colors::MAGMA
-        } else if fan_rpm < 500 {
-            colors::LAVA
+
+        let proc_tile = if has_processes {
+            Some(build_process_tile(node, chart_style))
         } else {
-            colors::GEOTHERMAL
+            None
         };
 
-        let fan_chart = container(
-            line_chart(
-                &node.history.fan_rpm,
-                &LineChartConfig {
-                    color: fan_color,
-                    label: fan_label,
-                    unit: "RPM",
-                    peak: node.snapshot.as_ref().map(|s| s.peak_fan as f64),
-                    threshold: None,
-                    y_min: Some(0.0),
-                    y_max: None,
-                },
-                &node.caches.fan,
-            ),
-        )
-        .width(Length::Fill)
-        .padding(4)
-        .style(chart_style);
-
-        chart_col = chart_col.push(fan_chart);
+        match (fan_tile, proc_tile) {
+            (Some(fan), Some(proc_t)) => {
+                chart_col = chart_col.push(row![fan, proc_t].spacing(16));
+            }
+            (Some(fan), None) => {
+                chart_col = chart_col.push(fan);
+            }
+            (None, Some(proc_t)) => {
+                chart_col = chart_col.push(proc_t);
+            }
+            (None, None) => {}
+        }
     }
 
     chart_col.into()
+}
+
+/// Top processes tile for the overview bottom row.
+fn build_process_tile<'a>(
+    node: &'a NodeState,
+    chart_style: impl Fn(&iced::Theme) -> container::Style + 'a,
+) -> iced::widget::Container<'a, Message> {
+    let processes = node.snapshot.as_ref().map(|s| &s.top_processes);
+
+    let title = text("Top Processes").size(12).color(colors::TEPHRA);
+
+    let header = row![
+        container(text("Process").size(11).color(colors::SCORIA)).width(Length::Fill),
+        container(text("PID").size(11).color(colors::SCORIA)).width(60),
+        container(text("CPU").size(11).color(colors::SCORIA)).width(50),
+    ]
+    .padding([0, 4]);
+
+    let mut rows = column![title, Space::new().height(4), header].spacing(2);
+
+    if let Some(procs) = processes {
+        for p in procs {
+            let cpu_color = if p.cpu_pct >= 80.0 {
+                colors::MAGMA
+            } else if p.cpu_pct >= 40.0 {
+                colors::EMBER
+            } else if p.cpu_pct >= 10.0 {
+                colors::COPPER
+            } else {
+                colors::PUMICE
+            };
+
+            let proc_row = row![
+                container(
+                    text(&p.name).size(12).color(colors::PUMICE)
+                ).width(Length::Fill),
+                container(
+                    text(p.pid.to_string()).size(11).color(colors::TEPHRA)
+                ).width(60),
+                container(
+                    text(format!("{:.1}%", p.cpu_pct)).size(12).color(cpu_color)
+                ).width(50),
+            ]
+            .align_y(iced::Alignment::Center)
+            .padding([2, 4]);
+
+            rows = rows.push(proc_row);
+        }
+    }
+
+    container(rows.padding(8))
+        .width(Length::Fill)
+        .style(chart_style)
 }
 
 /// Temperature duration curve — fixed range from 60°C to 100°C in 10° steps.

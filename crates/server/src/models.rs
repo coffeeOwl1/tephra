@@ -21,6 +21,13 @@ pub struct CoreSnapshot {
 }
 
 #[derive(Serialize, Clone)]
+pub struct ProcessSnapshot {
+    pub pid: u32,
+    pub name: String,
+    pub cpu_pct: f64,
+}
+
+#[derive(Serialize, Clone)]
 pub struct Snapshot {
     pub timestamp_ms: u128,
     pub temp_c: u32,
@@ -41,6 +48,7 @@ pub struct Snapshot {
     pub energy_wh: f64,
     pub uptime_secs: f64,
     pub cores: Vec<CoreSnapshot>,
+    pub top_processes: Vec<ProcessSnapshot>,
 }
 
 #[derive(Serialize)]
@@ -114,6 +122,15 @@ impl Snapshot {
             energy_wh: (state.energy_wh() * 1000.0).round() / 1000.0,
             uptime_secs: (state.start_time.elapsed().as_secs_f64() * 10.0).round() / 10.0,
             cores,
+            top_processes: state
+                .top_processes
+                .iter()
+                .map(|p| ProcessSnapshot {
+                    pid: p.pid,
+                    name: p.name.clone(),
+                    cpu_pct: (p.cpu_pct * 10.0).round() / 10.0,
+                })
+                .collect(),
         }
     }
 }

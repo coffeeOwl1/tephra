@@ -579,6 +579,7 @@ mod tests {
             cores: vec![
                 CoreSnapshot { freq_mhz: freq, util_pct: util },
             ],
+            top_processes: vec![],
         }
     }
 
