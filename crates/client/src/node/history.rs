@@ -1,5 +1,41 @@
 use std::collections::VecDeque;
 
+/// Preset history durations for chart display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+pub enum HistoryDuration {
+    /// 2 minutes (240 samples at 500ms).
+    #[default]
+    TwoMinutes,
+    /// 5 minutes (600 samples at 500ms).
+    FiveMinutes,
+    /// 10 minutes (1200 samples at 500ms).
+    TenMinutes,
+}
+
+impl HistoryDuration {
+    pub const ALL: [HistoryDuration; 3] = [
+        Self::TwoMinutes,
+        Self::FiveMinutes,
+        Self::TenMinutes,
+    ];
+
+    pub fn samples(self) -> usize {
+        match self {
+            Self::TwoMinutes => 240,
+            Self::FiveMinutes => 600,
+            Self::TenMinutes => 1200,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::TwoMinutes => "2 min",
+            Self::FiveMinutes => "5 min",
+            Self::TenMinutes => "10 min",
+        }
+    }
+}
+
 /// Fixed-capacity ring buffer for time-series data.
 /// When full, the oldest sample is dropped on push.
 #[derive(Debug, Clone)]
@@ -52,6 +88,14 @@ impl<T: Clone> RingBuffer<T> {
 
     pub fn clear(&mut self) {
         self.data.clear();
+    }
+
+    /// Resize the buffer to a new capacity, dropping oldest samples if shrinking.
+    pub fn resize(&mut self, new_capacity: usize) {
+        while self.data.len() > new_capacity {
+            self.data.pop_front();
+        }
+        self.capacity = new_capacity;
     }
 }
 
@@ -175,6 +219,15 @@ impl TimeSeriesStore {
         self.avg_util_pct.extend(hist.avg_util_pct.iter().copied());
         self.fan_rpm
             .extend(hist.fan_rpm.iter().map(|&v| v as f64));
+    }
+
+    /// Resize all ring buffers to a new capacity.
+    pub fn resize(&mut self, new_capacity: usize) {
+        self.temp_c.resize(new_capacity);
+        self.ppt_watts.resize(new_capacity);
+        self.avg_freq_mhz.resize(new_capacity);
+        self.avg_util_pct.resize(new_capacity);
+        self.fan_rpm.resize(new_capacity);
     }
 
     /// Push a single snapshot's values into all ring buffers.

@@ -1,7 +1,8 @@
-use iced::widget::{button, column, container, row, text, scrollable, text_input, Space};
+use iced::widget::{button, column, container, row, text, scrollable, text_input, Row, Space};
 use iced::{Element, Length};
 
 use crate::alerts::{AlertDefaults, AlertOverrides};
+use crate::node::history::HistoryDuration;
 use crate::app::App;
 use crate::message::Message;
 use crate::node::NodeState;
@@ -44,6 +45,52 @@ pub fn view(app: &App) -> Element<'_, Message> {
             ..Default::default()
         }
     });
+
+    // ── Chart History section ──
+    let history_title = text("Chart History")
+        .size(15)
+        .color(colors::EMBER);
+    let history_desc = text("How much data the charts display. Longer durations use more memory.")
+        .size(12)
+        .color(colors::TEPHRA);
+
+    let current_duration = app.history_duration;
+    let history_buttons: Element<'_, Message> = Row::with_children(
+        HistoryDuration::ALL.iter().map(|&dur| {
+            let is_active = dur == current_duration;
+            let label_color = if is_active { colors::EMBER } else { colors::TEPHRA };
+            button(text(dur.label()).size(13).color(label_color))
+                .on_press(Message::SetHistoryDuration(dur))
+                .padding([6, 16])
+                .style(move |_theme: &iced::Theme, status| {
+                    let (bg, border_color) = if is_active {
+                        (
+                            Some(colors::with_alpha(colors::EMBER, 0.1).into()),
+                            colors::EMBER,
+                        )
+                    } else {
+                        let bc = match status {
+                            button::Status::Hovered => colors::MINERAL,
+                            _ => colors::SCORIA,
+                        };
+                        (None, bc)
+                    };
+                    button::Style {
+                        background: bg,
+                        border: iced::Border {
+                            color: border_color,
+                            width: if is_active { 0.0 } else { 1.0 },
+                            radius: 6.0.into(),
+                        },
+                        text_color: label_color,
+                        ..Default::default()
+                    }
+                })
+                .into()
+        })
+    )
+    .spacing(8)
+    .into();
 
     // ── Alert Defaults section ──
     let section_title = text("Alert Defaults")
@@ -178,6 +225,11 @@ pub fn view(app: &App) -> Element<'_, Message> {
         Space::new().height(20),
         nodes_title,
         add_btn,
+        Space::new().height(16),
+        history_title,
+        history_desc,
+        Space::new().height(8),
+        history_buttons,
         Space::new().height(16),
         section_title,
         section_desc,

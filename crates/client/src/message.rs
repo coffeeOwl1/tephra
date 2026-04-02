@@ -81,6 +81,9 @@ pub enum Message {
     /// Clear all alert overrides for a node (revert to global defaults).
     ClearNodeAlertOverrides(NodeId),
 
+    /// Change the chart history duration.
+    SetHistoryDuration(crate::node::history::HistoryDuration),
+
     /// Send a test desktop notification.
     SendTestNotification,
 }

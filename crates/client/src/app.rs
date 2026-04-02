@@ -72,8 +72,8 @@ pub struct App {
     compare_last_redraw: std::time::Instant,
     /// Fleet power history (sum of all nodes' ppt_watts per tick).
     pub fleet_power_history: crate::node::history::RingBuffer<f64>,
-    /// Ring buffer capacity for history (samples at 500ms).
-    pub history_capacity: usize,
+    /// Chart history duration preset.
+    pub history_duration: crate::node::history::HistoryDuration,
     /// Event console filter for Compare view.
     pub console_filter: EventFilter,
     /// Summary table sort column and ascending flag.
@@ -106,9 +106,9 @@ impl App {
             compare_caches: CompareCaches::new(),
             compare_last_redraw: std::time::Instant::now(),
             fleet_power_history: crate::node::history::RingBuffer::new(
-                crate::node::history::TimeSeriesStore::DEFAULT_CAPACITY,
+                crate::node::history::HistoryDuration::default().samples(),
             ),
-            history_capacity: crate::node::history::TimeSeriesStore::DEFAULT_CAPACITY,
+            history_duration: crate::node::history::HistoryDuration::default(),
             console_filter: EventFilter::default(),
             summary_sort: (SummaryColumn::default(), false), // Temp descending
             alert_defaults: crate::alerts::AlertDefaults::default(),
@@ -117,8 +117,9 @@ impl App {
 
         // Load saved nodes from config
         let loaded = load_config();
-        if let Some(cap) = loaded.history_capacity {
-            app.history_capacity = cap;
+        if let Some(dur) = loaded.history_duration {
+            app.history_duration = dur;
+            app.fleet_power_history.resize(dur.samples());
         }
         app.alert_defaults = loaded.alert_defaults;
         let saved = loaded.nodes;
@@ -183,7 +184,7 @@ impl App {
                     return Task::none();
                 }
                 let id = NodeId::new();
-                let mut node = NodeState::with_capacity(id, addr, self.history_capacity);
+                let mut node = NodeState::with_capacity(id, addr, self.history_duration.samples());
                 // Apply pending display name and alert overrides from config
                 let addr_str = addr.to_string();
                 if let Some(name) = self.pending_display_names.remove(&addr_str) {
@@ -633,6 +634,17 @@ impl App {
                 Task::none()
             }
 
+            Message::SetHistoryDuration(duration) => {
+                self.history_duration = duration;
+                let cap = duration.samples();
+                for node in self.nodes.values_mut() {
+                    node.history.resize(cap);
+                }
+                self.fleet_power_history.resize(cap);
+                self.save_config_full();
+                Task::none()
+            }
+
             Message::UpdateAlertDefaults(defaults) => {
                 self.alert_defaults = defaults;
                 self.save_config_full();
@@ -762,6 +774,11 @@ impl App {
         let cfg = SavedConfigV2 {
             version: CONFIG_VERSION,
             alerts: self.alert_defaults.clone(),
+            history_duration: if self.history_duration == crate::node::history::HistoryDuration::default() {
+                None
+            } else {
+                Some(self.history_duration)
+            },
             nodes,
         };
         write_config_v2(&cfg);
@@ -778,6 +795,7 @@ const CONFIG_VERSION: u32 = 2;
 
 // -- Config V1 (legacy) ------------------------------------------------
 
+#[allow(dead_code)]
 #[derive(serde::Deserialize, Default)]
 struct SavedConfigV1 {
     #[serde(default)]
@@ -807,6 +825,8 @@ struct SavedConfigV2 {
     #[serde(default)]
     alerts: crate::alerts::AlertDefaults,
     #[serde(default)]
+    history_duration: Option<crate::node::history::HistoryDuration>,
+    #[serde(default)]
     nodes: Vec<SavedNodeV2>,
 }
 
@@ -821,7 +841,7 @@ struct SavedNode {
 struct LoadedConfig {
     nodes: Vec<SavedNode>,
     alert_defaults: crate::alerts::AlertDefaults,
-    history_capacity: Option<usize>,
+    history_duration: Option<crate::node::history::HistoryDuration>,
 }
 
 impl Default for LoadedConfig {
@@ -829,7 +849,7 @@ impl Default for LoadedConfig {
         Self {
             nodes: Vec::new(),
             alert_defaults: crate::alerts::AlertDefaults::default(),
-            history_capacity: None,
+            history_duration: None,
         }
     }
 }
@@ -871,7 +891,7 @@ fn load_config() -> LoadedConfig {
             return LoadedConfig {
                 nodes,
                 alert_defaults: cfg.alerts,
-                history_capacity: None,
+                history_duration: cfg.history_duration,
             };
         }
     }
@@ -895,12 +915,13 @@ fn load_config() -> LoadedConfig {
         let loaded = LoadedConfig {
             nodes,
             alert_defaults: crate::alerts::AlertDefaults::default(),
-            history_capacity: old.history_capacity,
+            history_duration: None,
         };
         // Auto-upgrade: write v2 config
         let v2 = SavedConfigV2 {
             version: CONFIG_VERSION,
             alerts: loaded.alert_defaults.clone(),
+            history_duration: None,
             nodes: loaded
                 .nodes
                 .iter()
