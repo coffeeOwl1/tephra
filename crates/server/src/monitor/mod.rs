@@ -368,8 +368,6 @@ pub struct SystemState {
     #[cfg(target_os = "windows")]
     pub(super) lhm_available: bool,
     #[cfg(target_os = "windows")]
-    pub(super) native_thermal_available: bool,
-    #[cfg(target_os = "windows")]
     pub(super) fan_detected: bool,
     /// Hash of the previous LHM HTTP response body and count of consecutive
     /// identical responses. When the count exceeds the threshold, LHM is stale.
@@ -436,8 +434,6 @@ impl SystemState {
 
             #[cfg(target_os = "windows")]
             lhm_available: pf.lhm_available,
-            #[cfg(target_os = "windows")]
-            native_thermal_available: pf.native_thermal_available,
             #[cfg(target_os = "windows")]
             fan_detected: false,
             #[cfg(target_os = "windows")]
@@ -783,8 +779,6 @@ mod tests {
 
             #[cfg(target_os = "windows")]
             lhm_available: false,
-            #[cfg(target_os = "windows")]
-            native_thermal_available: false,
             #[cfg(target_os = "windows")]
             fan_detected: false,
             #[cfg(target_os = "windows")]

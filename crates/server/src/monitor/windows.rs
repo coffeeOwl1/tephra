@@ -12,25 +12,22 @@ const LHM_URL: &str = "http://localhost:8085/data.json";
 
 pub(super) struct PlatformFields {
     pub lhm_available: bool,
-    pub native_thermal_available: bool,
 }
 
 pub(super) fn init_platform() -> PlatformFields {
     let lhm_available = check_lhm_http();
-    let native_thermal_available = !lhm_available;
-
     if lhm_available {
         tracing::info!("Using LibreHardwareMonitor HTTP server for sensor data");
     } else {
         warn!(
-            "LibreHardwareMonitor HTTP server not found at {LHM_URL} — using native sensors only. \
-             Install LibreHardwareMonitor and enable Options > HTTP Server for full sensor support."
+            "LibreHardwareMonitor HTTP server not found at {LHM_URL} — only CPU utilization \
+             will be available. Install LibreHardwareMonitor and enable Options > HTTP Server \
+             for temperature, power, frequency, and fan data."
         );
     }
 
     PlatformFields {
         lhm_available,
-        native_thermal_available,
     }
 }
 
@@ -242,31 +239,6 @@ fn http_get_json<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
     serde_json::from_str(&body).ok()
 }
 
-// ── Native ACPI thermal fallback ─────────────────────────────────────────────
-
-fn query_native_temperature() -> Option<u32> {
-    // Use PowerShell to query WMI without the wmi crate
-    let output = std::process::Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            "Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature -ErrorAction SilentlyContinue | Select-Object -ExpandProperty CurrentTemperature",
-        ])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .lines()
-        .filter_map(|line| line.trim().parse::<u32>().ok())
-        .map(|raw| ((raw as f64 / 10.0) - 273.15).round() as u32)
-        .max()
-}
-
 // ── NtQuerySystemInformation FFI ─────────────────────────────────────────────
 
 #[repr(C)]
@@ -449,11 +421,10 @@ impl SystemState {
                     if self.lhm_same_hash_ticks == Self::LHM_STALE_THRESHOLD {
                         warn!(
                             "LibreHardwareMonitor sensors appear stale \
-                             (identical response for {:.0}s), falling back to native sensors",
+                             (identical response for {:.0}s), sensor data unavailable until LHM recovers",
                             Self::LHM_STALE_THRESHOLD as f64 * 0.5
                         );
                         self.lhm_available = false;
-                        self.native_thermal_available = true;
                         // Keep lhm_prev_hash so retry logic can verify data has
                         // actually changed before re-enabling LHM.
                         self.lhm_same_hash_ticks = 0;
@@ -488,17 +459,13 @@ impl SystemState {
             } else {
                 // LHM HTTP failed — may have been closed
                 self.lhm_available = false;
-                self.native_thermal_available = true;
                 self.lhm_prev_hash = 0;
                 self.lhm_same_hash_ticks = 0;
-                warn!("LibreHardwareMonitor HTTP server lost, falling back to native sensors");
+                warn!("LibreHardwareMonitor HTTP server lost, sensor data unavailable");
             }
-        } else if self.native_thermal_available {
-            if let Some(temp) = query_native_temperature() {
-                self.temp_c = temp;
-            }
-            self.sample_frequencies_nt();
         }
+        // When LHM is unavailable, we only have CPU utilization (from NT).
+        // No fallback for temp/power/freq/fan — better to show nothing than wrong data.
 
         // Periodically retry LHM if not available (every ~30s at 500ms interval).
         // When retrying after a staleness detection, verify the data has actually
