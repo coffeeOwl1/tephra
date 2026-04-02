@@ -12,10 +12,13 @@ const LHM_URL: &str = "http://localhost:8085/data.json";
 
 pub(super) struct PlatformFields {
     pub lhm_available: bool,
+    pub lhm_exe_path: Option<String>,
 }
 
 pub(super) fn init_platform() -> PlatformFields {
+    let lhm_exe_path = find_lhm_exe_path();
     let lhm_available = check_lhm_http();
+
     if lhm_available {
         tracing::info!("Using LibreHardwareMonitor HTTP server for sensor data");
     } else {
@@ -26,8 +29,109 @@ pub(super) fn init_platform() -> PlatformFields {
         );
     }
 
+    if let Some(ref path) = lhm_exe_path {
+        tracing::info!("LHM auto-restart enabled: {path}");
+        setup_lhm_restart_task(path);
+    }
+
     PlatformFields {
         lhm_available,
+        lhm_exe_path,
+    }
+}
+
+/// Find LHM's executable path from the running process via WMIC.
+fn find_lhm_exe_path() -> Option<String> {
+    let output = std::process::Command::new("wmic")
+        .args([
+            "process",
+            "where",
+            "name='LibreHardwareMonitor.exe'",
+            "get",
+            "ExecutablePath",
+            "/value",
+        ])
+        .output()
+        .ok()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let line = line.trim();
+        if let Some(path) = line.strip_prefix("ExecutablePath=") {
+            let path = path.trim();
+            if !path.is_empty() {
+                return Some(path.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Create or update a scheduled task that can relaunch LHM in the user's
+/// interactive session. This is needed because tephra runs as SYSTEM in
+/// Session 0 and can't directly start GUI apps in the user's desktop.
+fn setup_lhm_restart_task(lhm_path: &str) {
+    let result = std::process::Command::new("schtasks")
+        .args([
+            "/create",
+            "/tn",
+            "_tephra_lhm",
+            "/tr",
+            lhm_path,
+            "/sc",
+            "onlogon",
+            "/rl",
+            "highest",
+            "/it",
+            "/f",
+        ])
+        .output();
+
+    match result {
+        Ok(output) if output.status.success() => {
+            tracing::debug!("Created/updated _tephra_lhm scheduled task");
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!("Failed to create _tephra_lhm task: {}", stderr.trim());
+        }
+        Err(e) => {
+            warn!("Failed to run schtasks: {e}");
+        }
+    }
+}
+
+/// Kill a stale LHM process and relaunch it via the scheduled task.
+fn restart_lhm() -> bool {
+    tracing::info!("Attempting to restart LibreHardwareMonitor");
+
+    // Kill the frozen process
+    let _ = std::process::Command::new("taskkill")
+        .args(["/F", "/IM", "LibreHardwareMonitor.exe"])
+        .output();
+
+    // Brief pause for the process to fully exit
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    // Relaunch via scheduled task (runs in user's interactive session)
+    let result = std::process::Command::new("schtasks")
+        .args(["/run", "/tn", "_tephra_lhm"])
+        .output();
+
+    match result {
+        Ok(output) if output.status.success() => {
+            tracing::info!("LibreHardwareMonitor restart triggered, waiting for sensor init");
+            true
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!("Failed to restart LHM: {}", stderr.trim());
+            false
+        }
+        Err(e) => {
+            warn!("Failed to run schtasks: {e}");
+            false
+        }
     }
 }
 
@@ -421,13 +525,17 @@ impl SystemState {
                     if self.lhm_same_hash_ticks == Self::LHM_STALE_THRESHOLD {
                         warn!(
                             "LibreHardwareMonitor sensors appear stale \
-                             (identical response for {:.0}s), sensor data unavailable until LHM recovers",
+                             (identical response for {:.0}s)",
                             Self::LHM_STALE_THRESHOLD as f64 * 0.5
                         );
                         self.lhm_available = false;
                         // Keep lhm_prev_hash so retry logic can verify data has
                         // actually changed before re-enabling LHM.
                         self.lhm_same_hash_ticks = 0;
+
+                        // Auto-restart LHM if we have its path and haven't
+                        // tried recently (at most once per 5 minutes).
+                        self.try_restart_lhm();
                         return;
                     }
                 } else {
@@ -461,7 +569,8 @@ impl SystemState {
                 self.lhm_available = false;
                 self.lhm_prev_hash = 0;
                 self.lhm_same_hash_ticks = 0;
-                warn!("LibreHardwareMonitor HTTP server lost, sensor data unavailable");
+                warn!("LibreHardwareMonitor HTTP server lost");
+                self.try_restart_lhm();
             }
         }
         // When LHM is unavailable, we only have CPU utilization (from NT).
@@ -490,6 +599,26 @@ impl SystemState {
                 }
             }
         }
+    }
+
+    /// Minimum interval between LHM restart attempts.
+    const LHM_RESTART_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(300);
+
+    fn try_restart_lhm(&mut self) {
+        if self.lhm_exe_path.is_none() {
+            return;
+        }
+
+        let now = std::time::Instant::now();
+        if let Some(last) = self.lhm_last_restart {
+            if now.duration_since(last) < Self::LHM_RESTART_COOLDOWN {
+                tracing::debug!("LHM restart skipped (cooldown)");
+                return;
+            }
+        }
+
+        self.lhm_last_restart = Some(now);
+        restart_lhm();
     }
 
     pub(crate) fn has_fan_sensor(&self) -> bool {

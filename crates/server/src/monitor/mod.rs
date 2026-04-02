@@ -375,6 +375,12 @@ pub struct SystemState {
     pub(super) lhm_prev_hash: u64,
     #[cfg(target_os = "windows")]
     pub(super) lhm_same_hash_ticks: u32,
+    /// Path to the LHM executable, discovered from the running process at startup.
+    #[cfg(target_os = "windows")]
+    pub(super) lhm_exe_path: Option<String>,
+    /// Last time tephra attempted to restart LHM (rate-limited to once per 5 min).
+    #[cfg(target_os = "windows")]
+    pub(super) lhm_last_restart: Option<Instant>,
 }
 
 impl SystemState {
@@ -440,6 +446,10 @@ impl SystemState {
             lhm_prev_hash: 0,
             #[cfg(target_os = "windows")]
             lhm_same_hash_ticks: 0,
+            #[cfg(target_os = "windows")]
+            lhm_exe_path: pf.lhm_exe_path,
+            #[cfg(target_os = "windows")]
+            lhm_last_restart: None,
         }
     }
 
@@ -785,6 +795,10 @@ mod tests {
             lhm_prev_hash: 0,
             #[cfg(target_os = "windows")]
             lhm_same_hash_ticks: 0,
+            #[cfg(target_os = "windows")]
+            lhm_exe_path: None,
+            #[cfg(target_os = "windows")]
+            lhm_last_restart: None,
         }
     }
 
