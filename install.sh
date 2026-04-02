@@ -141,6 +141,24 @@ build_client() {
 install_server() {
     info "Installing tephra server..."
 
+    # Remove any existing tephra service
+    if command -v systemctl &>/dev/null; then
+        if systemctl list-units --type=service --all 2>/dev/null | grep -q 'tephra.service'; then
+            warn "Existing tephra service found — stopping and removing..."
+            sudo systemctl stop tephra 2>/dev/null || sudo systemctl kill -s SIGKILL tephra 2>/dev/null || true
+            sudo systemctl disable tephra 2>/dev/null || true
+            sudo systemctl reset-failed tephra 2>/dev/null || true
+        fi
+        sudo rm -f /etc/systemd/system/tephra.service
+        sudo systemctl daemon-reload
+    fi
+
+    # Remove old binary
+    if [ -f /usr/local/bin/tephra ]; then
+        warn "Removing old binary at /usr/local/bin/tephra"
+        sudo rm -f /usr/local/bin/tephra
+    fi
+
     sudo cp target/release/tephra /usr/local/bin/tephra
     sudo chmod +x /usr/local/bin/tephra
     ok "Binary installed to /usr/local/bin/tephra"

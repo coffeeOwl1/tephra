@@ -515,7 +515,6 @@ fn build_overview<'a>(node: &'a NodeState, compact: bool) -> Element<'a, Message
     // Bottom row: fan chart (if detected) + top processes, side by side when not compact
     if !compact {
         let fan_detected = node.snapshot.as_ref().is_some_and(|s| s.fan_detected);
-        let has_processes = node.snapshot.as_ref().is_some_and(|s| !s.top_processes.is_empty());
 
         let fan_tile = if fan_detected {
             let fan_rpm = node.snapshot.as_ref().map(|s| s.fan_rpm).unwrap_or(0);
@@ -559,23 +558,12 @@ fn build_overview<'a>(node: &'a NodeState, compact: bool) -> Element<'a, Message
             None
         };
 
-        let proc_tile = if has_processes {
-            Some(build_process_tile(node, chart_style))
-        } else {
-            None
-        };
+        let proc_tile = build_process_tile(node, chart_style);
 
-        match (fan_tile, proc_tile) {
-            (Some(fan), Some(proc_t)) => {
-                chart_col = chart_col.push(row![fan, proc_t].spacing(16));
-            }
-            (Some(fan), None) => {
-                chart_col = chart_col.push(fan);
-            }
-            (None, Some(proc_t)) => {
-                chart_col = chart_col.push(proc_t);
-            }
-            (None, None) => {}
+        if let Some(fan) = fan_tile {
+            chart_col = chart_col.push(row![fan, proc_tile].spacing(16));
+        } else {
+            chart_col = chart_col.push(proc_tile);
         }
     }
 
@@ -600,8 +588,8 @@ fn build_process_tile<'a>(
 
     let mut rows = column![title, Space::new().height(4), header].spacing(2);
 
-    if let Some(procs) = processes {
-        for p in procs {
+    for i in 0..5 {
+        let proc_row: Element<'_, Message> = if let Some(p) = processes.and_then(|ps| ps.get(i)) {
             let cpu_color = if p.cpu_pct >= 80.0 {
                 colors::MAGMA
             } else if p.cpu_pct >= 40.0 {
@@ -612,9 +600,9 @@ fn build_process_tile<'a>(
                 colors::PUMICE
             };
 
-            let proc_row = row![
+            row![
                 container(
-                    text(&p.name).size(12).color(colors::PUMICE)
+                    text(p.name.clone()).size(12).color(colors::PUMICE)
                 ).width(Length::Fill),
                 container(
                     text(p.pid.to_string()).size(11).color(colors::TEPHRA)
@@ -624,10 +612,18 @@ fn build_process_tile<'a>(
                 ).width(50),
             ]
             .align_y(iced::Alignment::Center)
-            .padding([2, 4]);
+            .padding([2, 4])
+            .into()
+        } else {
+            // Empty placeholder row to maintain fixed height
+            row![
+                container(text(" ").size(12)).width(Length::Fill),
+            ]
+            .padding([2, 4])
+            .into()
+        };
 
-            rows = rows.push(proc_row);
-        }
+        rows = rows.push(proc_row);
     }
 
     container(rows.padding(8))

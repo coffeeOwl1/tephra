@@ -67,6 +67,7 @@ pub struct TopProcess {
 }
 
 /// Maximum number of top processes to track.
+#[cfg(target_os = "linux")]
 const TOP_PROCESS_COUNT: usize = 5;
 
 impl CoreInfo {
@@ -365,8 +366,10 @@ pub struct SystemState {
     /// Top processes by CPU usage (updated each sample).
     pub top_processes: Vec<TopProcess>,
     /// Previous per-process CPU ticks (pid → utime+stime) for delta computation.
+    #[cfg(target_os = "linux")]
     pub(super) prev_proc_ticks: std::collections::HashMap<u32, u64>,
     /// Previous aggregate system CPU total ticks (from /proc/stat "cpu " line).
+    #[cfg(target_os = "linux")]
     pub(super) prev_sys_total: u64,
 
     // Linux-specific sensor state
@@ -445,7 +448,9 @@ impl SystemState {
             n_cores,
 
             top_processes: Vec::new(),
+            #[cfg(target_os = "linux")]
             prev_proc_ticks: std::collections::HashMap::new(),
+            #[cfg(target_os = "linux")]
             prev_sys_total: 0,
 
             #[cfg(target_os = "linux")]
@@ -798,7 +803,9 @@ mod tests {
             n_cores,
 
             top_processes: Vec::new(),
+            #[cfg(target_os = "linux")]
             prev_proc_ticks: std::collections::HashMap::new(),
+            #[cfg(target_os = "linux")]
             prev_sys_total: 0,
 
             #[cfg(target_os = "linux")]
