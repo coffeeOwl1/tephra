@@ -70,6 +70,10 @@ pub struct TopProcess {
 #[cfg(target_os = "linux")]
 const TOP_PROCESS_COUNT: usize = 5;
 
+/// Number of samples to average process CPU over (20 × 500ms = 10s).
+#[cfg(target_os = "linux")]
+const PROC_AVG_WINDOW: usize = 20;
+
 impl CoreInfo {
     pub fn new() -> Self {
         Self {
@@ -365,12 +369,12 @@ pub struct SystemState {
 
     /// Top processes by CPU usage (updated each sample).
     pub top_processes: Vec<TopProcess>,
-    /// Previous per-process CPU ticks (pid → utime+stime) for delta computation.
+    /// Rolling window of (sys_total, per-pid ticks) for smoothed process CPU%.
     #[cfg(target_os = "linux")]
-    pub(super) prev_proc_ticks: std::collections::HashMap<u32, u64>,
-    /// Previous aggregate system CPU total ticks (from /proc/stat "cpu " line).
+    pub(super) proc_tick_history: VecDeque<(u64, std::collections::HashMap<u32, u64>)>,
+    /// Process names by PID (updated each sample).
     #[cfg(target_os = "linux")]
-    pub(super) prev_sys_total: u64,
+    pub(super) proc_names: std::collections::HashMap<u32, String>,
 
     // Linux-specific sensor state
     #[cfg(target_os = "linux")]
@@ -449,9 +453,9 @@ impl SystemState {
 
             top_processes: Vec::new(),
             #[cfg(target_os = "linux")]
-            prev_proc_ticks: std::collections::HashMap::new(),
+            proc_tick_history: VecDeque::new(),
             #[cfg(target_os = "linux")]
-            prev_sys_total: 0,
+            proc_names: std::collections::HashMap::new(),
 
             #[cfg(target_os = "linux")]
             hwmon_path: pf.hwmon_path,
@@ -804,9 +808,9 @@ mod tests {
 
             top_processes: Vec::new(),
             #[cfg(target_os = "linux")]
-            prev_proc_ticks: std::collections::HashMap::new(),
+            proc_tick_history: VecDeque::new(),
             #[cfg(target_os = "linux")]
-            prev_sys_total: 0,
+            proc_names: std::collections::HashMap::new(),
 
             #[cfg(target_os = "linux")]
             hwmon_path: None,

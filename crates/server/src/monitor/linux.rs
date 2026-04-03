@@ -150,7 +150,7 @@ impl SystemState {
 
     fn sample_top_processes(&mut self) {
         use std::collections::HashMap;
-        use super::TOP_PROCESS_COUNT;
+        use super::{TOP_PROCESS_COUNT, PROC_AVG_WINDOW};
 
         // Read aggregate CPU total from /proc/stat "cpu " line
         let stat_content = match fs::read_to_string("/proc/stat") {
@@ -168,16 +168,11 @@ impl SystemState {
             })
             .unwrap_or(0);
 
-        let d_sys = sys_total.saturating_sub(self.prev_sys_total);
-
         // Scan /proc for process CPU ticks
-        let mut current_ticks: HashMap<u32, (String, u64)> = HashMap::new();
+        let mut current_ticks: HashMap<u32, u64> = HashMap::new();
         let proc_dir = match fs::read_dir("/proc") {
             Ok(d) => d,
-            Err(_) => {
-                self.prev_sys_total = sys_total;
-                return;
-            }
+            Err(_) => return,
         };
 
         for entry in proc_dir.flatten() {
@@ -206,42 +201,56 @@ impl SystemState {
             let comm = content[comm_start + 1..comm_end].to_string();
             let rest = &content[comm_end + 2..]; // skip ") "
             let fields: Vec<&str> = rest.split_whitespace().collect();
-            // fields[0] = state, fields[11] = utime (index 13 in full stat), fields[12] = stime (14)
             if fields.len() < 13 {
                 continue;
             }
             let utime: u64 = fields[11].parse().unwrap_or(0);
             let stime: u64 = fields[12].parse().unwrap_or(0);
-            current_ticks.insert(pid, (comm, utime + stime));
+            current_ticks.insert(pid, utime + stime);
+            self.proc_names.insert(pid, comm);
         }
 
-        // Compute per-process CPU% from deltas (skip first sample)
-        if self.prev_sys_total > 0 && d_sys > 0 {
-            let mut procs: Vec<super::TopProcess> = current_ticks
-                .iter()
-                .filter_map(|(&pid, (name, ticks))| {
-                    let prev = self.prev_proc_ticks.get(&pid)?;
-                    let d_proc = ticks.saturating_sub(*prev);
-                    if d_proc == 0 {
-                        return None;
-                    }
-                    let cpu_pct = 100.0 * d_proc as f64 / d_sys as f64;
-                    Some(super::TopProcess {
-                        pid,
-                        name: name.clone(),
-                        cpu_pct,
-                    })
-                })
-                .collect();
-
-            procs.sort_by(|a, b| b.cpu_pct.partial_cmp(&a.cpu_pct).unwrap_or(std::cmp::Ordering::Equal));
-            procs.truncate(TOP_PROCESS_COUNT);
-            self.top_processes = procs;
+        // Push current snapshot into rolling window
+        self.proc_tick_history.push_back((sys_total, current_ticks));
+        if self.proc_tick_history.len() > PROC_AVG_WINDOW {
+            self.proc_tick_history.pop_front();
         }
 
-        // Store current ticks for next delta
-        self.prev_sys_total = sys_total;
-        self.prev_proc_ticks = current_ticks.into_iter().map(|(pid, (_, ticks))| (pid, ticks)).collect();
+        // Need at least 2 snapshots to compute deltas
+        if self.proc_tick_history.len() < 2 {
+            return;
+        }
+
+        // Compare oldest and newest snapshots in the window
+        let (old_sys, old_ticks) = self.proc_tick_history.front().unwrap();
+        let (new_sys, new_ticks) = self.proc_tick_history.back().unwrap();
+        let d_sys = new_sys.saturating_sub(*old_sys);
+        if d_sys == 0 {
+            return;
+        }
+
+        let mut procs: Vec<super::TopProcess> = new_ticks
+            .iter()
+            .filter_map(|(&pid, &new_t)| {
+                let old_t = old_ticks.get(&pid)?;
+                let d_proc = new_t.saturating_sub(*old_t);
+                if d_proc == 0 {
+                    return None;
+                }
+                let cpu_pct = 100.0 * d_proc as f64 / d_sys as f64;
+                let name = self.proc_names.get(&pid)?.clone();
+                Some(super::TopProcess { pid, name, cpu_pct })
+            })
+            .collect();
+
+        procs.sort_by(|a, b| b.cpu_pct.partial_cmp(&a.cpu_pct).unwrap_or(std::cmp::Ordering::Equal));
+        procs.truncate(TOP_PROCESS_COUNT);
+        self.top_processes = procs;
+
+        // Prune dead processes from names map periodically
+        if let Some((_, latest)) = self.proc_tick_history.back() {
+            self.proc_names.retain(|pid, _| latest.contains_key(pid));
+        }
     }
 }
 
