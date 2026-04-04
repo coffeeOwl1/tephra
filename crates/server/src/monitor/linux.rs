@@ -21,6 +21,9 @@ pub(super) fn init_platform() -> PlatformFields {
     }
 }
 
+/// No-op on Linux — only Windows registers a scheduled task.
+pub fn cleanup_platform() {}
+
 // ── Sensor sampling ──────────────────────────────────────────────────────────
 
 impl SystemState {

@@ -40,8 +40,81 @@ pub(super) fn init_platform() -> PlatformFields {
     }
 }
 
-/// Find LHM's executable path from the running process via WMIC.
+/// Remove the LHM auto-restart scheduled task created during init.
+pub fn cleanup_platform() {
+    let _ = std::process::Command::new("schtasks")
+        .args(["/delete", "/tn", "_tephra_lhm", "/f"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+/// Find LHM's executable path from the running process.
+///
+/// Step 1: Use `tasklist` to confirm LHM is actually running (works on all
+/// Windows versions including 11 24H2+ where `wmic` was removed).
+/// Step 2: Try `wmic` first (older Windows), then fall back to well-known
+/// install locations.
 fn find_lhm_exe_path() -> Option<String> {
+    // Step 1 — confirm the process is running via tasklist
+    let tasklist = std::process::Command::new("tasklist")
+        .args([
+            "/FI",
+            "IMAGENAME eq LibreHardwareMonitor.exe",
+            "/FO",
+            "CSV",
+            "/NH",
+        ])
+        .output()
+        .ok()?;
+
+    let tasklist_out = String::from_utf8_lossy(&tasklist.stdout);
+    let running = tasklist_out
+        .lines()
+        .any(|l| l.to_ascii_lowercase().contains("librehardwaremonitor.exe"));
+
+    if !running {
+        return None;
+    }
+
+    // Step 2a — try wmic (works on Windows 10 / Server 2019 and older)
+    if let Some(path) = find_lhm_path_via_wmic() {
+        return Some(path);
+    }
+
+    // Step 2b — fall back to common install locations
+    let candidates = [
+        r"C:\Program Files\LibreHardwareMonitor\LibreHardwareMonitor.exe",
+        r"C:\Program Files (x86)\LibreHardwareMonitor\LibreHardwareMonitor.exe",
+    ];
+
+    for candidate in &candidates {
+        if std::path::Path::new(candidate).exists() {
+            return Some(candidate.to_string());
+        }
+    }
+
+    // Step 2c — check the current user's home directory (portable installs)
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        let home_candidate =
+            format!(r"{home}\LibreHardwareMonitor\LibreHardwareMonitor.exe");
+        if std::path::Path::new(&home_candidate).exists() {
+            return Some(home_candidate);
+        }
+    }
+
+    // We know it's running but couldn't locate the exe — return None so the
+    // caller skips setting up the scheduled restart task.
+    warn!(
+        "LHM is running but executable path could not be determined; auto-restart disabled"
+    );
+    None
+}
+
+/// Try to resolve the LHM executable path via `wmic` (Windows 10 / Server
+/// 2019 and older). Returns `None` if wmic is unavailable or produces no
+/// output (e.g. Windows 11 24H2+ where wmic was removed).
+fn find_lhm_path_via_wmic() -> Option<String> {
     let output = std::process::Command::new("wmic")
         .args([
             "process",
@@ -53,6 +126,10 @@ fn find_lhm_exe_path() -> Option<String> {
         ])
         .output()
         .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
@@ -83,9 +160,9 @@ fn setup_lhm_restart_task(lhm_path: &str) {
         }
     };
 
-    // /ru <user> with /rl highest and /it requires /rp "" (empty password)
-    // to indicate "use the logged-on user's credentials" for an interactive task.
-    // This works for tasks that only run when the user is logged in.
+    // /ru <user> with /rl highest and /it specifies the task should run
+    // as the logged-in user with interactive privilege, for tasks that
+    // only run when the user is logged in.
     let result = std::process::Command::new("schtasks")
         .args([
             "/create",
@@ -148,8 +225,10 @@ fn restart_lhm() -> bool {
         .args(["/F", "/IM", "LibreHardwareMonitor.exe"])
         .output();
 
-    // Brief pause for the process to fully exit
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    // Brief pause for the process to fully exit.
+    // NOTE: This blocks the tokio executor thread. Keep the delay short.
+    // A full async conversion would require changing the sample_sensors call chain.
+    std::thread::sleep(std::time::Duration::from_millis(500));
 
     // Relaunch via scheduled task (runs in user's interactive session)
     let result = std::process::Command::new("schtasks")
@@ -195,13 +274,16 @@ struct LhmNode {
 
 /// Parse the numeric prefix from a value string like "70.0 °C" or "1455 RPM".
 fn parse_value(s: &str) -> f64 {
-    // Take chars until we hit something that's not a digit, dot, or minus
-    let num_str: String = s
-        .trim()
-        .chars()
+    let num_str: String = s.trim().chars()
         .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
         .collect();
-    num_str.parse().unwrap_or(0.0)
+    match num_str.parse() {
+        Ok(v) => v,
+        Err(_) => {
+            tracing::debug!("failed to parse sensor value: {:?}", s);
+            0.0
+        }
+    }
 }
 
 /// Batched sensor data from a single LHM HTTP query.
@@ -233,9 +315,9 @@ fn query_lhm_http() -> Option<LhmData> {
             (&node.sensor_type, &node.value, &node.sensor_id)
         {
             let id_lower = sid.to_lowercase();
-            let is_cpu = id_lower.contains("/cpu")
-                || id_lower.contains("/amdcpu")
-                || id_lower.contains("/intelcpu");
+            let is_cpu = id_lower.starts_with("/cpu")
+                || id_lower.starts_with("/amdcpu")
+                || id_lower.starts_with("/intelcpu");
 
             match stype.as_str() {
                 "Temperature" => {
@@ -354,14 +436,17 @@ fn http_get_body(url: &str) -> Option<String> {
     let (host_port, path) = url.split_once('/').unwrap_or((url, ""));
     let path = format!("/{path}");
 
-    let timeout = std::time::Duration::from_millis(500);
+    // TODO: migrate to async HTTP to avoid blocking the tokio executor
+    let connect_timeout = std::time::Duration::from_millis(150);
+    let io_timeout = std::time::Duration::from_millis(150);
     let addr = host_port.to_socket_addrs().ok()?.next()?;
-    let stream = std::net::TcpStream::connect_timeout(&addr, timeout).ok()?;
-    stream.set_read_timeout(Some(timeout)).ok()?;
-    stream.set_write_timeout(Some(timeout)).ok()?;
+    let stream = std::net::TcpStream::connect_timeout(&addr, connect_timeout).ok()?;
+    stream.set_read_timeout(Some(io_timeout)).ok()?;
+    stream.set_write_timeout(Some(io_timeout)).ok()?;
 
-    use std::io::Write;
+    use std::io::{Read, Write};
     let mut stream = stream;
+    // HTTP/1.0 intentional: avoids chunked Transfer-Encoding so we can read until connection close
     write!(
         stream,
         "GET {path} HTTP/1.0\r\nHost: {host_port}\r\nConnection: close\r\n\r\n"
@@ -369,7 +454,7 @@ fn http_get_body(url: &str) -> Option<String> {
     .ok()?;
 
     let mut response = Vec::new();
-    stream.read_to_end(&mut response).ok()?;
+    stream.take(1_048_576).read_to_end(&mut response).ok()?;
 
     let response_str = String::from_utf8_lossy(&response);
     let body = response_str.split_once("\r\n\r\n")?.1;
@@ -393,6 +478,7 @@ struct ProcessorPerformanceInfo {
     interrupt_count: u32,
 }
 
+#[link(name = "ntdll")]
 extern "system" {
     fn NtQuerySystemInformation(
         system_information_class: u32,
@@ -489,7 +575,7 @@ extern "system" {
     fn RegCloseKey(hkey: HKEY) -> i32;
 }
 
-const HKEY_LOCAL_MACHINE: HKEY = 0x80000002u32 as HKEY;
+const HKEY_LOCAL_MACHINE: HKEY = 0x80000002isize as HKEY;
 const KEY_READ: u32 = 0x20019;
 
 fn read_registry_string(subkey: &str, value_name: &str) -> Option<String> {
@@ -567,6 +653,7 @@ impl SystemState {
                             Self::LHM_STALE_THRESHOLD as f64 * 0.5
                         );
                         self.lhm_available = false;
+                        self.fan_detected = false;
                         // Keep lhm_prev_hash so retry logic can verify data has
                         // actually changed before re-enabling LHM.
                         self.lhm_same_hash_ticks = 0;
@@ -619,9 +706,8 @@ impl SystemState {
         // changed before re-enabling — otherwise we'd cycle endlessly between
         // "stale → fallback → retry → re-enable → stale".
         if !self.lhm_available {
-            static RETRY_COUNTER: std::sync::atomic::AtomicU32 =
-                std::sync::atomic::AtomicU32::new(0);
-            let count = RETRY_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let count = self.lhm_retry_counter;
+            self.lhm_retry_counter = self.lhm_retry_counter.wrapping_add(1);
             if count % 60 == 0 {
                 if let Some(data) = query_lhm_http() {
                     // Only re-enable if the response has changed since we last
@@ -846,7 +932,7 @@ fn get_max_freq_nt() -> u32 {
         }
     }
 
-    5000
+    6000
 }
 
 pub fn get_scaling_driver() -> String {

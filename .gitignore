@@ -1,2 +1,12 @@
 /target
 /.claude/
+
+# Editor & IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store

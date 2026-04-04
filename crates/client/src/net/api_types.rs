@@ -102,7 +102,7 @@ pub struct HealthResponse {
 mod tests {
     use super::*;
 
-    /// Real snapshot payload captured from the tephra-server at 192.168.99.80:9867.
+    /// Real snapshot payload captured from a tephra-server instance.
     const REAL_SNAPSHOT: &str = r#"{"timestamp_ms":1774072362397,"temp_c":50,"temp_rate_cs":0,"ppt_watts":10.4,"avg_freq_mhz":4495,"avg_util_pct":0.1,"fan_rpm":0,"fan_detected":false,"throttle_active":false,"throttle_reason":"none","peak_temp":83,"peak_ppt":94.0,"peak_freq":4500,"peak_fan":0,"thermal_events":0,"power_events":0,"energy_wh":22.205,"uptime_secs":4017.6,"cores":[{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4464,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":2.0},{"freq_mhz":4466,"util_pct":0.0},{"freq_mhz":4466,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":2.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4466,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0},{"freq_mhz":4500,"util_pct":0.0}]}"#;
 
     #[test]

@@ -77,6 +77,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     // Cleanup
+    monitor::cleanup_platform();
     if let Some(m) = mdns {
         m.unregister();
     }

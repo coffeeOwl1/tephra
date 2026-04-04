@@ -15,8 +15,8 @@ use windows as platform;
 compile_error!("tephra-server only supports Linux and Windows");
 
 // Re-export platform-specific free functions
-pub use platform::{get_cpu_model, get_governor, get_hostname, get_max_freq, get_scaling_driver,
-    get_total_ram_gb, wall_clock_hms};
+pub use platform::{cleanup_platform, get_cpu_model, get_governor, get_hostname, get_max_freq,
+    get_scaling_driver, get_total_ram_gb, wall_clock_hms};
 
 pub const HISTORY_LEN: usize = 120;
 pub const TEMP_OK: u32 = 70;
@@ -405,6 +405,9 @@ pub struct SystemState {
     /// Last time tephra attempted to restart LHM (rate-limited to once per 5 min).
     #[cfg(target_os = "windows")]
     pub(super) lhm_last_restart: Option<Instant>,
+    /// Counter for retrying LHM HTTP checks when unavailable (checked every 60 ticks ~30s).
+    #[cfg(target_os = "windows")]
+    pub(super) lhm_retry_counter: u32,
 }
 
 impl SystemState {
@@ -480,6 +483,8 @@ impl SystemState {
             lhm_exe_path: pf.lhm_exe_path,
             #[cfg(target_os = "windows")]
             lhm_last_restart: None,
+            #[cfg(target_os = "windows")]
+            lhm_retry_counter: 0,
         }
     }
 

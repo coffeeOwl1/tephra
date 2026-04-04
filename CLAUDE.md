@@ -81,7 +81,7 @@ The tephra-server runs on port 9867 and exposes:
 - `GET /api/v1/events` — SSE stream: `snapshot` (every 500ms), `throttle`, `workload_start`, `workload_end`
 - `GET /health` — health check
 
-Dev server: `192.168.99.80:9867`. Config persists to `~/.config/tephra/nodes.toml`.
+Config persists to `~/.config/tephra/nodes.toml`.
 
 ## Rendering Notes
 
