@@ -197,6 +197,11 @@ fn setup_lhm_restart_task(lhm_path: &str) {
 }
 
 /// Find the username of the console session user via `query user`.
+///
+/// NOTE: The `query user` output format varies by locale and may fail on
+/// non-English Windows or systems without Remote Desktop Services.
+/// WTSEnumerateSessionsW would be more robust but adds significant FFI
+/// complexity for a feature that only runs once at startup.
 fn find_console_user() -> Option<String> {
     let output = std::process::Command::new("query")
         .arg("user")
@@ -298,6 +303,93 @@ struct LhmData {
     response_hash: u64,
 }
 
+/// Recursive tree walker that collects sensor data from LHM nodes.
+fn collect(node: &LhmNode, data: &mut LhmData) {
+    if let (Some(ref stype), Some(ref val_str), Some(ref sid)) =
+        (&node.sensor_type, &node.value, &node.sensor_id)
+    {
+        let id_lower = sid.to_lowercase();
+        let is_cpu = id_lower.starts_with("/cpu")
+            || id_lower.starts_with("/amdcpu")
+            || id_lower.starts_with("/intelcpu");
+
+        match stype.as_str() {
+            "Temperature" => {
+                if is_cpu && data.temp_c.is_none() {
+                    let name_lower = node.text.to_lowercase();
+                    if name_lower.contains("package")
+                        || name_lower.contains("tctl")
+                        || name_lower == "core max"
+                    {
+                        let v = parse_value(val_str);
+                        if v > 0.0 {
+                            data.temp_c = Some(v.round() as u32);
+                        }
+                    }
+                }
+            }
+            "Power" => {
+                if is_cpu && data.ppt_watts.is_none() {
+                    let name_lower = node.text.to_lowercase();
+                    if name_lower.contains("package") {
+                        let v = parse_value(val_str);
+                        if v >= 0.0 {
+                            data.ppt_watts = Some(v);
+                        }
+                    }
+                }
+            }
+            "Fan" => {
+                if data.fan_rpm.is_none() {
+                    let v = parse_value(val_str);
+                    if v > 0.0 {
+                        data.fan_rpm = Some(v.round() as u32);
+                    }
+                }
+            }
+            "Clock" => {
+                if is_cpu && id_lower.contains("/clock/") {
+                    let name_lower = node.text.to_lowercase();
+                    if !name_lower.contains("bus") {
+                        let v = parse_value(val_str);
+                        if v > 0.0 {
+                            data.per_core_freq.push(v.round() as u32);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for child in &node.children {
+        collect(child, data);
+    }
+}
+
+/// Recursive tree walker that finds the maximum CPU temperature from LHM nodes.
+fn find_max_cpu_temp(node: &LhmNode, max: &mut f64) {
+    if let (Some(ref stype), Some(ref val_str), Some(ref sid)) =
+        (&node.sensor_type, &node.value, &node.sensor_id)
+    {
+        let id_lower = sid.to_lowercase();
+        if stype == "Temperature"
+            && (id_lower.contains("/cpu")
+                || id_lower.contains("/amdcpu")
+                || id_lower.contains("/intelcpu"))
+            && !node.text.to_lowercase().contains("distance")
+        {
+            let v = parse_value(val_str);
+            if v > *max {
+                *max = v;
+            }
+        }
+    }
+    for child in &node.children {
+        find_max_cpu_temp(child, max);
+    }
+}
+
 fn query_lhm_http() -> Option<LhmData> {
     let (root, response_hash): (LhmNode, u64) = http_get_json_with_hash(LHM_URL)?;
 
@@ -310,94 +402,10 @@ fn query_lhm_http() -> Option<LhmData> {
     };
 
     // Walk the tree collecting sensors
-    fn collect(node: &LhmNode, data: &mut LhmData) {
-        if let (Some(ref stype), Some(ref val_str), Some(ref sid)) =
-            (&node.sensor_type, &node.value, &node.sensor_id)
-        {
-            let id_lower = sid.to_lowercase();
-            let is_cpu = id_lower.starts_with("/cpu")
-                || id_lower.starts_with("/amdcpu")
-                || id_lower.starts_with("/intelcpu");
-
-            match stype.as_str() {
-                "Temperature" => {
-                    if is_cpu && data.temp_c.is_none() {
-                        let name_lower = node.text.to_lowercase();
-                        if name_lower.contains("package")
-                            || name_lower.contains("tctl")
-                            || name_lower == "core max"
-                        {
-                            let v = parse_value(val_str);
-                            if v > 0.0 {
-                                data.temp_c = Some(v.round() as u32);
-                            }
-                        }
-                    }
-                }
-                "Power" => {
-                    if is_cpu && data.ppt_watts.is_none() {
-                        let name_lower = node.text.to_lowercase();
-                        if name_lower.contains("package") {
-                            let v = parse_value(val_str);
-                            if v >= 0.0 {
-                                data.ppt_watts = Some(v);
-                            }
-                        }
-                    }
-                }
-                "Fan" => {
-                    if data.fan_rpm.is_none() {
-                        let v = parse_value(val_str);
-                        if v > 0.0 {
-                            data.fan_rpm = Some(v.round() as u32);
-                        }
-                    }
-                }
-                "Clock" => {
-                    if is_cpu && id_lower.contains("/clock/") {
-                        let name_lower = node.text.to_lowercase();
-                        if !name_lower.contains("bus") {
-                            let v = parse_value(val_str);
-                            if v > 0.0 {
-                                data.per_core_freq.push(v.round() as u32);
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        for child in &node.children {
-            collect(child, data);
-        }
-    }
-
     collect(&root, &mut data);
 
     // If we didn't find a package/tctl temp, fall back to highest CPU temp
     if data.temp_c.is_none() {
-        fn find_max_cpu_temp(node: &LhmNode, max: &mut f64) {
-            if let (Some(ref stype), Some(ref val_str), Some(ref sid)) =
-                (&node.sensor_type, &node.value, &node.sensor_id)
-            {
-                let id_lower = sid.to_lowercase();
-                if stype == "Temperature"
-                    && (id_lower.contains("/cpu")
-                        || id_lower.contains("/amdcpu")
-                        || id_lower.contains("/intelcpu"))
-                    && !node.text.to_lowercase().contains("distance")
-                {
-                    let v = parse_value(val_str);
-                    if v > *max {
-                        *max = v;
-                    }
-                }
-            }
-            for child in &node.children {
-                find_max_cpu_temp(child, max);
-            }
-        }
         let mut max = 0.0;
         find_max_cpu_temp(&root, &mut max);
         if max > 0.0 {
@@ -557,16 +565,16 @@ extern "system" {
 type HKEY = *mut c_void;
 
 extern "system" {
-    fn RegOpenKeyExA(
+    fn RegOpenKeyExW(
         hkey: HKEY,
-        sub_key: *const u8,
+        sub_key: *const u16,
         options: u32,
         sam_desired: u32,
         result: *mut HKEY,
     ) -> i32;
-    fn RegQueryValueExA(
+    fn RegQueryValueExW(
         hkey: HKEY,
-        value_name: *const u8,
+        value_name: *const u16,
         reserved: *const u32,
         value_type: *mut u32,
         data: *mut u8,
@@ -579,14 +587,14 @@ const HKEY_LOCAL_MACHINE: HKEY = 0x80000002isize as HKEY;
 const KEY_READ: u32 = 0x20019;
 
 fn read_registry_string(subkey: &str, value_name: &str) -> Option<String> {
-    let subkey_cstr = format!("{subkey}\0");
-    let value_cstr = format!("{value_name}\0");
+    let subkey_wide: Vec<u16> = subkey.encode_utf16().chain(Some(0)).collect();
+    let value_wide: Vec<u16> = value_name.encode_utf16().chain(Some(0)).collect();
     let mut hkey: HKEY = std::ptr::null_mut();
 
     let rc = unsafe {
-        RegOpenKeyExA(
+        RegOpenKeyExW(
             HKEY_LOCAL_MACHINE,
-            subkey_cstr.as_ptr(),
+            subkey_wide.as_ptr(),
             0,
             KEY_READ,
             &mut hkey,
@@ -596,14 +604,15 @@ fn read_registry_string(subkey: &str, value_name: &str) -> Option<String> {
         return None;
     }
 
-    let mut buf = vec![0u8; 512];
+    // Buffer sized in bytes; wide strings use 2 bytes per character
+    let mut buf = vec![0u8; 1024];
     let mut buf_len = buf.len() as u32;
     let mut value_type: u32 = 0;
 
     let rc = unsafe {
-        RegQueryValueExA(
+        RegQueryValueExW(
             hkey,
-            value_cstr.as_ptr(),
+            value_wide.as_ptr(),
             std::ptr::null(),
             &mut value_type,
             buf.as_mut_ptr(),
@@ -616,14 +625,16 @@ fn read_registry_string(subkey: &str, value_name: &str) -> Option<String> {
         return None;
     }
 
-    // Trim null terminator
-    let len = buf_len as usize;
-    let s = if len > 0 && buf[len - 1] == 0 {
-        &buf[..len - 1]
-    } else {
-        &buf[..len]
-    };
-    String::from_utf8(s.to_vec()).ok().map(|s| s.trim().to_string())
+    // REG_SZ = 1; only interpret as string for string types
+    if value_type != 1 {
+        return None;
+    }
+
+    // Reinterpret byte buffer as u16 slice, trim null terminator
+    let len_u16 = buf_len as usize / 2;
+    let wide = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u16, len_u16) };
+    let wide = if wide.last() == Some(&0) { &wide[..wide.len() - 1] } else { wide };
+    String::from_utf16(wide).ok().map(|s| s.trim().to_string())
 }
 
 // ── Sensor sampling ──────────────────────────────────────────────────────────
@@ -852,6 +863,9 @@ pub fn wall_clock_hms() -> (u8, u8, u8) {
 
 // ── System info queries ──────────────────────────────────────────────────────
 
+/// Returns the machine's NetBIOS name (COMPUTERNAME), which is limited to
+/// 15 characters and uppercased. On domain-joined machines this may differ
+/// from the DNS hostname.
 pub fn get_hostname() -> String {
     std::env::var("COMPUTERNAME").unwrap_or_else(|_| "unknown".to_string())
 }
@@ -867,14 +881,16 @@ pub fn get_cpu_model() -> String {
 
 pub fn get_max_freq() -> u32 {
     // Read from registry
-    let subkey = "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0\0";
-    let value_name = "~MHz\0";
+    let subkey_wide: Vec<u16> = "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0"
+        .encode_utf16().chain(Some(0)).collect();
+    let value_wide: Vec<u16> = "~MHz"
+        .encode_utf16().chain(Some(0)).collect();
     let mut hkey: HKEY = std::ptr::null_mut();
 
     let rc = unsafe {
-        RegOpenKeyExA(
+        RegOpenKeyExW(
             HKEY_LOCAL_MACHINE,
-            subkey.as_ptr(),
+            subkey_wide.as_ptr(),
             0,
             KEY_READ,
             &mut hkey,
@@ -889,9 +905,9 @@ pub fn get_max_freq() -> u32 {
     let mut value_type: u32 = 0;
 
     let rc = unsafe {
-        RegQueryValueExA(
+        RegQueryValueExW(
             hkey,
-            value_name.as_ptr(),
+            value_wide.as_ptr(),
             std::ptr::null(),
             &mut value_type,
             &mut mhz as *mut u32 as *mut u8,
